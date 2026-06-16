@@ -497,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuStatusItem?.title = awake ? "Status: Awake is on" : "Status: Sleep is allowed"
         menuToggleItem?.title = awake ? "Turn Off" : "Turn On"
 
-        let updateAvailableTitle = availableUpdateManifest.map { "Update to \($0.version)..." } ?? "Check for Updates..."
+        let updateAvailableTitle = availableUpdateManifest.map { "Update available (\($0.version))" } ?? "Check for Updates..."
         let canUseUpdateItems = !isCheckingForUpdates && !isInstallingUpdate
         let updateMenuTitle = isCheckingForUpdates
             ? "Checking for Updates..."
