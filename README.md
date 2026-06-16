@@ -18,6 +18,12 @@ By default the installer places the app in `~/Applications/StayAwake.app`, regis
 ./scripts/build.sh
 ```
 
+When the Elevated Technologies Developer ID certificate is installed, the build signs `StayAwake.app` with:
+
+```text
+Developer ID Application: Elevated Technologies LLC (8HBASZNPZ4)
+```
+
 ## Package
 
 ```bash
