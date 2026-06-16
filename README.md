@@ -24,6 +24,8 @@ When the Elevated Technologies Developer ID certificate is installed, the build 
 Developer ID Application: Elevated Technologies LLC (8HBASZNPZ4)
 ```
 
+StayAwake is for internal company-owned Macs. Release builds are Developer ID signed, and notarization is intentionally skipped unless Michael explicitly requests it for a specific release.
+
 ## Package
 
 ```bash
