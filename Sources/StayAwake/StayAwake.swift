@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Darwin
+import ApplicationServices
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
 private let updateManifestURL = URL(string: "https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/stayawake-manifest.json")!
@@ -124,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupMainMenu()
         setupMenuBarIcon()
+        requestAccessibilityPermissionIfNeeded()
         startWatchdog()
         startUpdateChecks()
         cleanupStaleCaffeinate()
@@ -142,6 +144,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         existing.activate(options: [])
         log("another StayAwake instance is already running pid=\(existing.processIdentifier); exiting pid=\(currentPID)")
         return true
+    }
+
+    private func requestAccessibilityPermissionIfNeeded() {
+        let trusted = AXIsProcessTrustedWithOptions([
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as CFDictionary)
+
+        log("accessibility permission check: trusted=\(trusted)")
+        if !trusted {
+            showInfo(
+                """
+                StayAwake needs Accessibility permission to keep the system awake reliably.
+                If you do not see the permission prompt, open:
+                System Settings > Privacy & Security > Accessibility
+                and enable StayAwake.
+                """
+            )
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
