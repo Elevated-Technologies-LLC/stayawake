@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Darwin
 import ApplicationServices
+import CoreGraphics
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
 private let updateManifestURL = URL(string: "https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/stayawake-manifest.json")!
@@ -93,6 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuToggleItem: NSMenuItem?
     private var menuUpdateItem: NSMenuItem?
     private var awakeMenuUpdateItem: NSMenuItem?
+    private var statusMenuUpdateItem: NSMenuItem?
+    private var availableUpdateManifest: UpdateManifest?
     private var caffeinateProcess: Process?
     private var userActivityProcesses: [Int32: Process] = [:]
     private var watchdogTimer: Timer?
@@ -125,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupMainMenu()
         setupMenuBarIcon()
-        requestAccessibilityPermissionIfNeeded()
+        requestRequiredPermissionsIfNeeded()
         startWatchdog()
         startUpdateChecks()
         cleanupStaleCaffeinate()
@@ -146,21 +149,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func requestAccessibilityPermissionIfNeeded() {
-        let trusted = AXIsProcessTrustedWithOptions([
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ] as CFDictionary)
+    private func requestRequiredPermissionsIfNeeded() {
+        let trustedAccessibility = AXIsProcessTrusted()
+        log("accessibility permission check: trusted=\(trustedAccessibility)")
+        if !trustedAccessibility {
+            let promptResult = AXIsProcessTrustedWithOptions([
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+            ] as CFDictionary)
+            log("accessibility permission prompt result=\(promptResult)")
+            if !promptResult {
+                showInfo(
+                    """
+                    StayAwake needs Accessibility permission to keep the system awake reliably.
+                    If you do not see the permission prompt, open:
+                    System Settings > Privacy & Security > Accessibility
+                    and enable StayAwake.
+                    """
+                )
+            }
+        }
 
-        log("accessibility permission check: trusted=\(trusted)")
-        if !trusted {
-            showInfo(
-                """
-                StayAwake needs Accessibility permission to keep the system awake reliably.
-                If you do not see the permission prompt, open:
-                System Settings > Privacy & Security > Accessibility
-                and enable StayAwake.
-                """
-            )
+        let trustedScreenRecording = CGPreflightScreenCaptureAccess()
+        log("screen recording permission check: trusted=\(trustedScreenRecording)")
+        if !trustedScreenRecording {
+            let promptResult = CGRequestScreenCaptureAccess()
+            log("screen recording permission prompt result=\(promptResult)")
         }
     }
 
@@ -180,16 +193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusItemClicked(_ sender: AnyObject?) {
-        guard let event = NSApp.currentEvent else {
-            toggleAwake()
-            return
-        }
-
-        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
-            showMenu()
-        } else {
-            toggleAwake()
-        }
+        // Always open the status menu so the full controls are discoverable,
+        // including the update action.
+        showMenu()
     }
 
     @objc private func quitApp() {
@@ -197,7 +203,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkForUpdatesFromMenu() {
-        checkForUpdates(triggeredByUser: true)
+        log("update selected from menu")
+        checkForUpdates(triggeredByUser: true, autoInstallWhenAvailable: true)
+    }
+
+    @objc private func showAboutPanel() {
+        NSApp.orderFrontStandardAboutPanel(nil)
+    }
+
+    @objc private func checkOrInstallUpdateFromStatusMenu() {
+        guard let manifest = availableUpdateManifest else {
+            log("status menu update selected; no cached update; checking")
+            checkForUpdates(triggeredByUser: true, autoInstallWhenAvailable: true)
+            return
+        }
+
+        log("status menu update selected; applying version=\(manifest.version)")
+        installUpdate(manifest)
     }
 
     private func setupMenuBarIcon() {
@@ -227,6 +249,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appUpdate.target = self
         appMenu.addItem(appUpdate)
         appMenu.addItem(NSMenuItem.separator())
+        let appAbout = NSMenuItem(title: "About StayAwake", action: #selector(showAboutPanel), keyEquivalent: "")
+        appAbout.target = self
+        appMenu.addItem(appAbout)
+        appMenu.addItem(NSMenuItem.separator())
+        let appVersion = NSMenuItem(title: versionMenuTitle(), action: nil, keyEquivalent: "")
+        appVersion.isEnabled = false
+        appMenu.addItem(appVersion)
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(NSMenuItem(title: "Quit StayAwake", action: #selector(quitApp), keyEquivalent: "q"))
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
@@ -243,6 +273,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let awakeUpdate = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
         awakeUpdate.target = self
         awakeMenu.addItem(awakeUpdate)
+        awakeMenu.addItem(NSMenuItem.separator())
+        let awakeAbout = NSMenuItem(title: "About StayAwake", action: #selector(showAboutPanel), keyEquivalent: "")
+        awakeAbout.target = self
+        awakeMenu.addItem(awakeAbout)
+        awakeMenu.addItem(NSMenuItem.separator())
+        let awakeVersion = NSMenuItem(title: versionMenuTitle(), action: nil, keyEquivalent: "")
+        awakeVersion.isEnabled = false
+        awakeMenu.addItem(awakeVersion)
         awakeMenuItem.submenu = awakeMenu
         mainMenu.addItem(awakeMenuItem)
 
@@ -444,13 +482,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("status item updated; isAwake=\(isAwake)")
     }
 
+    private func versionMenuTitle() -> String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        if let build, !build.isEmpty {
+            return "Version \(version) (\(build))"
+        }
+        return "Version \(version)"
+    }
+
     private func updateMenuStatus() {
         let awake = isAwake
         awakeTopMenuItem?.title = awake ? "Awake On" : "Sleep OK"
         menuStatusItem?.title = awake ? "Status: Awake is on" : "Status: Sleep is allowed"
         menuToggleItem?.title = awake ? "Turn Off" : "Turn On"
-        menuUpdateItem?.isEnabled = !isCheckingForUpdates && !isInstallingUpdate
-        awakeMenuUpdateItem?.isEnabled = !isCheckingForUpdates && !isInstallingUpdate
+
+        let updateAvailableTitle = availableUpdateManifest.map { "Update to \($0.version)..." } ?? "Check for Updates..."
+        let canUseUpdateItems = !isCheckingForUpdates && !isInstallingUpdate
+        let updateMenuTitle = isCheckingForUpdates
+            ? "Checking for Updates..."
+            : isInstallingUpdate
+                ? "Installing Update..."
+                : updateAvailableTitle
+
+        statusMenuUpdateItem?.title = updateMenuTitle
+        statusMenuUpdateItem?.isEnabled = canUseUpdateItems
+        menuUpdateItem?.title = updateMenuTitle
+        menuUpdateItem?.isEnabled = canUseUpdateItems
+        awakeMenuUpdateItem?.title = updateMenuTitle
+        awakeMenuUpdateItem?.isEnabled = canUseUpdateItems
         if let awakeMenu = awakeTopMenuItem?.submenu {
             awakeMenu.item(at: 0)?.title = awake ? "Awake is on" : "Sleep is allowed"
             awakeMenu.item(at: 1)?.title = awake ? "Turn Off" : "Turn On"
@@ -518,6 +578,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status.isEnabled = false
         menu.addItem(status)
         menu.addItem(NSMenuItem.separator())
+        let aboutItem = NSMenuItem(title: "About StayAwake", action: #selector(showAboutPanel), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+        menu.addItem(NSMenuItem.separator())
+        let versionItem = NSMenuItem(title: versionMenuTitle(), action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
+        menu.addItem(NSMenuItem.separator())
+        let updateItem = NSMenuItem(
+            title: "Check for Updates...",
+            action: #selector(checkOrInstallUpdateFromStatusMenu),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        statusMenuUpdateItem = updateItem
+        menu.addItem(updateItem)
+        updateMenuStatus()
+        menu.addItem(NSMenuItem.separator())
         let toggleItem = NSMenuItem(title: isAwake ? "Turn Off" : "Turn On", action: #selector(toggleAwake), keyEquivalent: "")
         toggleItem.target = self
         menu.addItem(toggleItem)
@@ -530,6 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.performClick(nil)
         DispatchQueue.main.async { [weak self] in
             self?.statusItem?.menu = nil
+            self?.statusMenuUpdateItem = nil
         }
     }
 
@@ -559,20 +638,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func checkForUpdates(triggeredByUser: Bool) {
+    private func checkForUpdates(triggeredByUser: Bool, autoInstallWhenAvailable: Bool = false) {
         guard !isCheckingForUpdates, !isInstallingUpdate else { return }
         isCheckingForUpdates = true
-        menuUpdateItem?.title = "Checking for Updates..."
-        awakeMenuUpdateItem?.title = "Checking for Updates..."
         updateMenuStatus()
-        log("checking for updates")
+        log("update check started (triggeredByUser=\(triggeredByUser), autoInstallWhenAvailable=\(autoInstallWhenAvailable))")
 
         URLSession.shared.dataTask(with: updateManifestURL) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isCheckingForUpdates = false
-                self.menuUpdateItem?.title = "Check for Updates..."
-                self.awakeMenuUpdateItem?.title = "Check for Updates..."
                 self.updateMenuStatus()
 
                 if let error = error {
@@ -601,7 +676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 do {
                     let manifest = try JSONDecoder().decode(UpdateManifest.self, from: data)
-                    self.handleUpdateManifest(manifest, triggeredByUser: triggeredByUser)
+                    self.handleUpdateManifest(manifest, triggeredByUser: triggeredByUser, autoInstallWhenAvailable: autoInstallWhenAvailable)
                 } catch {
                     self.log("update manifest parse failed: \(error.localizedDescription)")
                     if triggeredByUser {
@@ -612,18 +687,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.resume()
     }
 
-    private func handleUpdateManifest(_ manifest: UpdateManifest, triggeredByUser: Bool) {
+    private func handleUpdateManifest(_ manifest: UpdateManifest, triggeredByUser: Bool, autoInstallWhenAvailable: Bool) {
         let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         guard compareVersions(manifest.version, currentVersion) == .orderedDescending else {
             log("no update available; current=\(currentVersion) manifest=\(manifest.version)")
+            availableUpdateManifest = nil
             if triggeredByUser {
                 showInfo("StayAwake is up to date. Current version: \(currentVersion).")
             }
+            updateMenuStatus()
             return
         }
 
         log("update available current=\(currentVersion) new=\(manifest.version)")
-        installUpdate(manifest)
+        availableUpdateManifest = manifest
+        updateMenuStatus()
+
+        if autoInstallWhenAvailable {
+            log("auto-installing update for user request; version=\(manifest.version)")
+            installUpdate(manifest)
+        }
     }
 
     private func installUpdate(_ manifest: UpdateManifest) {
@@ -635,10 +718,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         isInstallingUpdate = true
-        menuUpdateItem?.title = "Installing Update..."
-        awakeMenuUpdateItem?.title = "Installing Update..."
+        statusMenuUpdateItem?.title = "Installing Update..."
+        availableUpdateManifest = manifest
         updateMenuStatus()
-        log("downloading update \(manifest.version)")
+        log("update download/install started version=\(manifest.version)")
 
         URLSession.shared.downloadTask(with: assetURL) { [weak self] downloadedURL, response, error in
             DispatchQueue.main.async {
@@ -663,6 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try FileManager.default.moveItem(at: downloadedURL, to: zipURL)
                     try self.verifyUpdateZip(at: zipURL, expectedSHA256: manifest.assets.macArm64.sha256)
                     try self.launchUpdateInstaller(zipURL: zipURL, version: manifest.version)
+                    self.log("update download/install success version=\(manifest.version)")
                 } catch {
                     self.finishUpdateInstallWithError("Could not install update: \(error.localizedDescription)")
                 }
@@ -674,6 +758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isInstallingUpdate = false
         menuUpdateItem?.title = "Check for Updates..."
         awakeMenuUpdateItem?.title = "Check for Updates..."
+        statusMenuUpdateItem?.title = "Check for Updates..."
         updateMenuStatus()
         log(message)
         showError(message)
@@ -734,7 +819,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = [scriptURL.path, appURL.path, zipURL.path]
         try process.run()
-        log("launched updater for version \(version)")
+        log("update download/install success; launched updater for version \(version)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             NSApp.terminate(nil)
         }
