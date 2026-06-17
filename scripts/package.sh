@@ -9,6 +9,9 @@ ZIP="$DIST/StayAwake-mac-arm64.zip"
 PKG="$DIST/StayAwake-mac-arm64.pkg"
 MANIFEST="$DIST/stayawake-manifest.json"
 INSTALLER="$DIST/install-stayawake.sh"
+INSTALLER_ZIP="$DIST/Install-StayAwake-mac-arm64.zip"
+INSTALLER_DMG="$DIST/Install-StayAwake.dmg"
+INSTALLER_MANIFEST="$DIST/stayawake-installer-manifest.json"
 
 "$ROOT/scripts/build.sh"
 
@@ -50,10 +53,15 @@ NOW="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
 }
 JSON
 
+"$ROOT/scripts/package-installer.sh"
+
 echo "Packaged:"
 echo "  $ZIP"
 echo "  $MANIFEST"
 echo "  $INSTALLER"
+echo "  $INSTALLER_ZIP"
+echo "  $INSTALLER_DMG"
+echo "  $INSTALLER_MANIFEST"
 if [[ -f "$PKG" ]]; then
   echo "  $PKG"
 fi

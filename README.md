@@ -10,7 +10,15 @@ Install the latest release:
 /bin/bash -c "$(curl -fsSL https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/install-stayawake.sh)"
 ```
 
-By default the installer places the app in `~/Applications/StayAwake.app`, registers a user LaunchAgent, and starts the app.
+When that command is run in a normal local Terminal session, it launches the graphical `Install StayAwake` app. The installer shows download progress, verifies the GitHub checksum, installs the app, sets up the menu bar launch agent, and walks the user through Screen Recording and Accessibility if macOS still needs them.
+
+When the same command is run over SSH or in automation, it falls back to the direct non-interactive install flow and places the app in `~/Applications/StayAwake.app`, registers a user LaunchAgent, and starts the app.
+
+Force the direct automation path:
+
+```bash
+STAYAWAKE_INSTALL_MODE=direct /bin/bash -c "$(curl -fsSL https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/install-stayawake.sh)"
+```
 
 ## Build
 
@@ -38,6 +46,9 @@ Package output goes to `dist/`:
 - `StayAwake-mac-arm64.pkg`
 - `stayawake-manifest.json`
 - `install-stayawake.sh`
+- `Install-StayAwake-mac-arm64.zip`
+- `Install-StayAwake.dmg`
+- `stayawake-installer-manifest.json`
 
 ## Updates
 

@@ -27,6 +27,21 @@ private struct UpdateAsset: Decodable {
     let size: Int?
 }
 
+private enum UtilityCommand: String {
+    case checkAccessibility = "--check-accessibility"
+    case checkScreenRecording = "--check-screen-recording"
+}
+
+private func handleUtilityCommandIfNeeded() {
+    let arguments = Set(CommandLine.arguments.dropFirst())
+    if arguments.contains(UtilityCommand.checkAccessibility.rawValue) {
+        exit(AXIsProcessTrusted() ? EXIT_SUCCESS : EXIT_FAILURE)
+    }
+    if arguments.contains(UtilityCommand.checkScreenRecording.rawValue) {
+        exit(CGPreflightScreenCaptureAccess() ? EXIT_SUCCESS : EXIT_FAILURE)
+    }
+}
+
 protocol MugButtonDelegate: AnyObject {
     func mugButtonDidToggle()
     func mugButtonDidRequestMenu(_ view: NSView)
@@ -861,6 +876,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 }
+
+handleUtilityCommandIfNeeded()
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
