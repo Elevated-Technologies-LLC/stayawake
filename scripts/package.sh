@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/update-config.sh"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 DIST="$ROOT/dist"
 APP="$DIST/StayAwake.app"
@@ -36,6 +37,7 @@ fi
 SHA256="$(/usr/bin/shasum -a 256 "$ZIP" | /usr/bin/awk '{print $1}')"
 SIZE="$(/usr/bin/stat -f '%z' "$ZIP")"
 NOW="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
+UPDATE_ASSET_BASE_URL="$(stayawake_update_asset_base_url)"
 
 /bin/cat > "$MANIFEST" <<JSON
 {
@@ -45,7 +47,7 @@ NOW="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
   "notes": "StayAwake $VERSION",
   "assets": {
     "mac_arm64": {
-      "url": "https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/StayAwake-mac-arm64.zip",
+      "url": "$UPDATE_ASSET_BASE_URL/StayAwake-mac-arm64.zip",
       "sha256": "$SHA256",
       "size": $SIZE
     }

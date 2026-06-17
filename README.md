@@ -55,7 +55,13 @@ Package output goes to `dist/`:
 The app checks this public GitHub release manifest at launch and every six hours:
 
 ```text
-https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/stayawake-manifest.json
+https://github.com/Elevated-Technologies-LLC/stayawake-updates/releases/latest/download/stayawake-manifest.json
 ```
 
-When a newer version is available, StayAwake downloads `StayAwake-mac-arm64.zip`, verifies its SHA-256 checksum from the manifest, replaces the installed app, and relaunches.
+StayAwake now follows the same GitHub update layout as ELVRDP:
+
+- Source repo: `Elevated-Technologies-LLC/stayawake`
+- Public update repo: `Elevated-Technologies-LLC/stayawake-updates`
+- Internal installer mirror: `192.168.53.240:/data/applications/stayawake`
+
+Release publishing uploads the same signed assets to both GitHub repos so older StayAwake builds that still check the source repo can bridge forward to the public updater feed. When a newer version is available, StayAwake downloads `StayAwake-mac-arm64.zip`, verifies its SHA-256 checksum from the manifest, replaces the installed app, and relaunches.

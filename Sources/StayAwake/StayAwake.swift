@@ -5,7 +5,7 @@ import ApplicationServices
 import CoreGraphics
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
-private let updateManifestURL = URL(string: "https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/stayawake-manifest.json")!
+private let updateManifestURL = stayAwakeUpdateManifestURL()
 
 private struct UpdateManifest: Decodable {
     let version: String
@@ -877,9 +877,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-handleUtilityCommandIfNeeded()
+@main
+private enum StayAwakeApp {
+    private static var delegate: AppDelegate?
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+    static func main() {
+        handleUtilityCommandIfNeeded()
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        Self.delegate = delegate
+        app.run()
+    }
+}

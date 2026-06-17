@@ -30,6 +30,7 @@ mkdir -p "$BUILD_APP/Contents/MacOS" "$BUILD_APP/Contents/Resources" "$DIST"
   "$ROOT/Info.plist" > "$BUILD_APP/Contents/Info.plist"
 
 /usr/bin/swiftc \
+  "$ROOT/Sources/Shared/UpdateConfig.swift" \
   "$ROOT/Sources/StayAwake/StayAwake.swift" \
   -o "$BUILD_APP/Contents/MacOS/StayAwake"
 

@@ -3,7 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-private let manifestURL = URL(string: "https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/stayawake-manifest.json")!
+private let manifestURL = stayAwakeUpdateManifestURL()
 private let installerName = "Install StayAwake"
 private let appName = "StayAwake"
 private let launchAgentLabel = "com.elvtech.stayawake"

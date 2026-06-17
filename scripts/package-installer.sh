@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/update-config.sh"
 
 version="${STAYAWAKE_VERSION:-$(tr -d '[:space:]' < VERSION)}"
 build="${STAYAWAKE_BUILD:-${GITHUB_RUN_NUMBER:-1}}"
-repo="${STAYAWAKE_UPDATE_REPO:-Elevated-Technologies-LLC/stayawake}"
 dist="${DIST_DIR:-dist}"
 build_dist="${STAYAWAKE_INSTALLER_BUILD_DIST:-$(mktemp -d "${TMPDIR:-/tmp}/stayawake-installer-build.XXXXXX")}"
 app_name="Install StayAwake"
@@ -82,6 +82,7 @@ mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 swiftc -O -parse-as-library \
   -framework AppKit \
   -framework CryptoKit \
+  Sources/Shared/UpdateConfig.swift \
   Sources/InstallStayAwake/main.swift \
   -o "$app_dir/Contents/MacOS/$app_name"
 chmod 755 "$app_dir/Contents/MacOS/$app_name"
@@ -164,6 +165,7 @@ zip_size="$(stat -f%z "$dist/$zip_name")"
 dmg_size="$(stat -f%z "$dist/$dmg_name")"
 released_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 release_notes="$(signature_notes "$app_dir")"
+asset_base_url="$(stayawake_update_asset_base_url)"
 
 cat > "$dist/$manifest_name" <<JSON
 {
@@ -174,12 +176,12 @@ cat > "$dist/$manifest_name" <<JSON
   "notes": "$release_notes",
   "assets": {
     "mac_arm64_zip": {
-      "url": "https://github.com/$repo/releases/latest/download/$zip_name",
+      "url": "$asset_base_url/$zip_name",
       "sha256": "$zip_sha",
       "size": $zip_size
     },
     "mac_arm64_dmg": {
-      "url": "https://github.com/$repo/releases/latest/download/$dmg_name",
+      "url": "$asset_base_url/$dmg_name",
       "sha256": "$dmg_sha",
       "size": $dmg_size
     }
