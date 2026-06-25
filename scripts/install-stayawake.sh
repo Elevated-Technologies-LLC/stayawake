@@ -135,6 +135,41 @@ verify_sha() {
   fi
 }
 
+reset_tcc_permissions() {
+  local service bundle_id
+  for service in Accessibility ScreenCapture; do
+    for bundle_id in com.elvtech.stayawake com.elvtech.stayawake.installer; do
+      /usr/bin/tccutil reset "$service" "$bundle_id" >/dev/null 2>&1 || true
+    done
+  done
+}
+
+remove_path() {
+  local target="$1"
+  [[ -e "$target" ]] || return 0
+  if /bin/rm -rf "$target" 2>/dev/null; then
+    return 0
+  fi
+  local quoted
+  quoted="$(printf "%q" "$target")"
+  /usr/bin/osascript -e "do shell script \"/bin/rm -rf $quoted\" with administrator privileges" >/dev/null
+}
+
+run_uninstall() {
+  local domain
+  domain="gui/$(/usr/bin/id -u)"
+  /bin/launchctl bootout "$domain" "$LAUNCH_AGENT" >/dev/null 2>&1 || true
+  /bin/launchctl disable "$domain/com.elvtech.stayawake" >/dev/null 2>&1 || true
+  /usr/bin/pkill -x StayAwake >/dev/null 2>&1 || true
+  /usr/bin/pkill -x caffeinate >/dev/null 2>&1 || true
+  /bin/rm -f "$LAUNCH_AGENT"
+  remove_path "$APP_PATH" || true
+  remove_path "$HOME/Applications/StayAwake.app" || true
+  remove_path "/Applications/StayAwake.app" || true
+  reset_tcc_permissions
+  echo "StayAwake app, launch agent, and TCC permission records were removed."
+}
+
 run_gui_installer() {
   local manifest="$WORK_DIR/stayawake-installer-manifest.json"
   local zip="$WORK_DIR/Install-StayAwake-mac-arm64.zip"
@@ -262,6 +297,9 @@ case "$MODE" in
     ;;
   direct)
     run_direct_install
+    ;;
+  uninstall)
+    run_uninstall
     ;;
   *)
     echo "Unknown STAYAWAKE_INSTALL_MODE: $MODE" >&2

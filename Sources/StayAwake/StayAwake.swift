@@ -30,6 +30,8 @@ private struct UpdateAsset: Decodable {
 private enum UtilityCommand: String {
     case checkAccessibility = "--check-accessibility"
     case checkScreenRecording = "--check-screen-recording"
+    case requestAccessibility = "--request-accessibility"
+    case requestScreenRecording = "--request-screen-recording"
 }
 
 private func handleUtilityCommandIfNeeded() {
@@ -39,6 +41,16 @@ private func handleUtilityCommandIfNeeded() {
     }
     if arguments.contains(UtilityCommand.checkScreenRecording.rawValue) {
         exit(CGPreflightScreenCaptureAccess() ? EXIT_SUCCESS : EXIT_FAILURE)
+    }
+    if arguments.contains(UtilityCommand.requestAccessibility.rawValue) {
+        let trusted = AXIsProcessTrustedWithOptions([
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as CFDictionary)
+        exit(trusted ? EXIT_SUCCESS : EXIT_FAILURE)
+    }
+    if arguments.contains(UtilityCommand.requestScreenRecording.rawValue) {
+        let trusted = CGRequestScreenCaptureAccess()
+        exit(trusted ? EXIT_SUCCESS : EXIT_FAILURE)
     }
 }
 

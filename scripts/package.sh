@@ -19,7 +19,7 @@ INSTALLER_MANIFEST="$DIST/stayawake-installer-manifest.json"
 /bin/rm -f "$ZIP" "$PKG" "$MANIFEST" "$INSTALLER"
 (
   cd "$DIST"
-  COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --keepParent "StayAwake.app" "$ZIP"
+  COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --noextattr --norsrc --keepParent "StayAwake.app" "$ZIP"
 )
 
 if command -v pkgbuild >/dev/null 2>&1; then

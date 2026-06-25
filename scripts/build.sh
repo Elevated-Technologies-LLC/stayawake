@@ -53,5 +53,11 @@ if [[ -n "$CODESIGN_IDENTITY" ]]; then
   fi
 fi
 
-/usr/bin/ditto "$BUILD_APP" "$APP"
+/usr/bin/ditto --noextattr --norsrc "$BUILD_APP" "$APP"
+/usr/bin/xattr -cr "$APP" >/dev/null 2>&1 || true
+/usr/bin/find "$APP" -exec /usr/bin/xattr -d com.apple.FinderInfo {} \; 2>/dev/null || true
+VERIFY_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/stayawake-verify.XXXXXX")"
+/usr/bin/ditto --noextattr --norsrc "$APP" "$VERIFY_DIR/StayAwake.app"
+/usr/bin/codesign --verify --deep --strict "$VERIFY_DIR/StayAwake.app"
+/bin/rm -rf "$VERIFY_DIR"
 echo "Built $APP ($VERSION build $BUILD)"

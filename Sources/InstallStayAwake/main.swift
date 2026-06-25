@@ -8,6 +8,15 @@ private let installerName = "Install StayAwake"
 private let appName = "StayAwake"
 private let launchAgentLabel = "com.elvtech.stayawake"
 
+private func installerVersionText() -> String {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+    if build.isEmpty || build == version {
+        return "Installer version \(version)"
+    }
+    return "Installer version \(version) (\(build))"
+}
+
 private struct UpdateManifest: Decodable {
     let version: String
     let notes: String?
@@ -58,6 +67,15 @@ private enum PermissionKind: Equatable {
             return "--check-accessibility"
         }
     }
+
+    var requestArgument: String {
+        switch self {
+        case .screenRecording:
+            return "--request-screen-recording"
+        case .accessibility:
+            return "--request-accessibility"
+        }
+    }
 }
 
 private enum InstallerError: Error, CustomStringConvertible {
@@ -90,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let detailLabel = NSTextField(labelWithString: "The installer installs StayAwake into Applications and walks through the needed Mac permissions.")
     private let progress = NSProgressIndicator()
     private let logView = NSTextView()
+    private let versionLabel = NSTextField(labelWithString: installerVersionText())
     private let installButton = NSButton(title: "Install StayAwake", target: nil, action: nil)
     private let screenButton = NSButton(title: "Open Screen Recording", target: nil, action: nil)
     private let accessibilityButton = NSButton(title: "Open Accessibility", target: nil, action: nil)
@@ -99,8 +118,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stepLabels: [NSTextField] = []
     private var permissionPollTimer: Timer?
     private var activePermissionWait: PermissionKind?
-    private var manuallyAcceptedScreenRecording = false
-    private var manuallyAcceptedAccessibility = false
 
     private var installDirectoryURL: URL {
         let environment = ProcessInfo.processInfo.environment
@@ -174,6 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         owner.textColor = .secondaryLabelColor
         owner.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(owner)
+
+        versionLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        versionLabel.textColor = .secondaryLabelColor
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(versionLabel)
 
         statusLabel.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -267,6 +289,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             owner.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
             owner.trailingAnchor.constraint(equalTo: title.trailingAnchor),
 
+            versionLabel.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            versionLabel.topAnchor.constraint(equalTo: owner.bottomAnchor, constant: 4),
+            versionLabel.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+
             statusLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 30),
             statusLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 22),
             statusLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -30),
@@ -299,8 +325,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startInstall() {
-        manuallyAcceptedScreenRecording = false
-        manuallyAcceptedAccessibility = false
         installButton.isEnabled = false
         screenButton.isEnabled = false
         accessibilityButton.isEnabled = false
@@ -347,11 +371,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             try stopOldStayAwake()
             try installApp(from: sourceApp)
+            try registerInstalledApp()
             try writeLaunchAgent()
-            try run("/usr/bin/open", ["-gj", appPath])
             try? FileManager.default.removeItem(at: temp)
 
-            try await setStatus("StayAwake is installed", detail: "StayAwake is open so macOS can show it in Privacy settings.", progress: 0.82, step: 3)
+            try await setStatus("StayAwake is installed", detail: "The installer will request permissions using the installed StayAwake app identity.", progress: 0.82, step: 3)
             await MainActor.run {
                 beginPermissionWorkflow()
                 rollbackButton.isHidden = false
@@ -529,9 +553,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try run("/usr/bin/plutil", ["-lint", plistPath.path])
         let domain = "gui/\(getuid())"
         _ = try? run("/bin/launchctl", ["bootout", domain, plistPath.path])
+    }
+
+    private func startLaunchAgent() throws {
+        let plistPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
+        let domain = "gui/\(getuid())"
         _ = try? run("/bin/launchctl", ["enable", "\(domain)/\(launchAgentLabel)"])
         _ = try? run("/bin/launchctl", ["bootstrap", domain, plistPath.path])
         _ = try? run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(launchAgentLabel)"])
+    }
+
+    private func registerInstalledApp() throws {
+        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if FileManager.default.fileExists(atPath: lsregister) {
+            _ = try? run(lsregister, ["-f", appPath])
+        }
+        _ = try? run("/usr/bin/mdimport", [appPath])
+        appendLog("Registered installed StayAwake app with macOS services.")
     }
 
     @objc private func openScreenRecording() {
@@ -555,16 +594,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if isContinueClick {
-            setManualAcceptance(true, for: kind)
-            appendLog("\(kind.displayName) manually accepted from Continue button.")
-            continuePermissionWorkflow(
-                screenGranted: permissionIsSatisfied(.screenRecording),
-                accessibilityGranted: permissionIsSatisfied(.accessibility)
-            )
+            appendLog("Continue clicked, but installed StayAwake still reports \(kind.displayName) is missing.")
+            statusLabel.stringValue = "Still waiting for \(kind.displayName)"
+            detailLabel.stringValue = "macOS still reports the installed StayAwake app is not allowed. Enable the row named StayAwake with the coffee cup icon, not Install StayAwake."
+            openSettingsPane(kind.settingsURL)
             return
         }
 
-        _ = try? run("/usr/bin/open", ["-gj", appPath])
+        requestPermission(kind)
         startPermissionWait(kind)
     }
 
@@ -578,21 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func permissionIsSatisfied(_ kind: PermissionKind) -> Bool {
-        switch kind {
-        case .screenRecording:
-            return manuallyAcceptedScreenRecording || permissionIsGranted(kind)
-        case .accessibility:
-            return manuallyAcceptedAccessibility || permissionIsGranted(kind)
-        }
-    }
-
-    private func setManualAcceptance(_ accepted: Bool, for kind: PermissionKind) {
-        switch kind {
-        case .screenRecording:
-            manuallyAcceptedScreenRecording = accepted
-        case .accessibility:
-            manuallyAcceptedAccessibility = accepted
-        }
+        permissionIsGranted(kind)
     }
 
     private func beginPermissionWorkflow() {
@@ -636,7 +659,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         launchButton.isEnabled = false
         statusLabel.stringValue = "Grant \(kind.displayName)"
-        detailLabel.stringValue = "Click the \(kind.displayName) button, turn StayAwake on in System Settings, and the installer will continue automatically. If it does not move, click the button again to recheck."
+        detailLabel.stringValue = "Click the \(kind.displayName) button, then enable the row named StayAwake with the coffee cup icon. Do not enable Install StayAwake."
         markStep(permissionStepIndex(kind), state: "active")
         schedulePermissionPolling(kind)
     }
@@ -645,14 +668,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionPollTimer?.invalidate()
         activePermissionWait = kind
         statusLabel.stringValue = "Waiting for \(kind.displayName)"
-        detailLabel.stringValue = "Toggle StayAwake on in System Settings. This installer is paused and will not trigger repeated Apple permission prompts. Click Continue after allowing if it does not move."
+        detailLabel.stringValue = "Toggle on the row named StayAwake with the coffee cup icon. Click Continue to recheck; the installer will not accept the installer app entry."
         switch kind {
         case .screenRecording:
             screenButton.title = "Continue"
         case .accessibility:
             accessibilityButton.title = "Continue"
         }
-        appendLog("Opening \(kind.displayName) settings. Toggle StayAwake on; installer is waiting quietly.")
+        appendLog("Opening \(kind.displayName) settings. Toggle the installed StayAwake app on; installer is waiting quietly.")
         openSettingsPane(kind.settingsURL)
         progress.doubleValue = max(progress.doubleValue, 0.90)
         markStep(permissionStepIndex(kind), state: "active")
@@ -705,54 +728,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if process.terminationStatus == 0 {
                     return true
                 }
+                appendLog("\(kind.displayName) command check reported missing for installed StayAwake.")
             } catch {
                 appendLog("\(kind.displayName) command check failed: \(error.localizedDescription)")
             }
         }
-        return permissionIsGrantedInTCCDatabase(kind)
+        return false
     }
 
-    private func permissionIsGrantedInTCCDatabase(_ kind: PermissionKind) -> Bool {
-        let database = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db")
-        guard FileManager.default.fileExists(atPath: database.path) else {
-            return false
+    private func requestPermission(_ kind: PermissionKind) {
+        let executable = appURL.appendingPathComponent("Contents/MacOS/StayAwake").path
+        guard FileManager.default.fileExists(atPath: executable) else {
+            appendLog("Cannot request \(kind.displayName); installed StayAwake executable is missing.")
+            return
         }
-        let service: String
-        switch kind {
-        case .screenRecording:
-            service = "kTCCServiceScreenCapture"
-        case .accessibility:
-            service = "kTCCServiceAccessibility"
-        }
-        let candidates = [
-            "com.elvtech.stayawake",
-            "/Applications/StayAwake.app/Contents/MacOS/StayAwake",
-            appURL.appendingPathComponent("Contents/MacOS/StayAwake").path,
-            "StayAwake"
-        ]
-        let quotedCandidates = candidates.map { "'\($0.replacingOccurrences(of: "'", with: "''"))'" }.joined(separator: ",")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [
-            database.path,
-            "SELECT auth_value FROM access WHERE service='\(service)' AND client IN (\(quotedCandidates)) ORDER BY last_modified DESC LIMIT 1;"
-        ]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
         do {
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                return false
-            }
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return text == "2"
+            _ = try run(executable, [kind.requestArgument])
+            appendLog("\(kind.displayName) request command completed as granted.")
         } catch {
-            return false
+            appendLog("\(kind.displayName) request command opened or refreshed the macOS permission entry.")
         }
     }
 
@@ -778,6 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try stopOldStayAwake()
             try removeLaunchAgent()
             let result = try rollbackAppBundle()
+            resetTCCPermissions()
             await MainActor.run {
                 screenButton.isHidden = true
                 accessibilityButton.isHidden = true
@@ -785,7 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 installButton.isEnabled = true
                 rollbackButton.isEnabled = true
                 statusLabel.stringValue = "Rollback finished"
-                detailLabel.stringValue = result
+                detailLabel.stringValue = "\(result) StayAwake privacy permission records were reset."
                 progress.doubleValue = 0
                 appendLog(result)
             }
@@ -859,11 +854,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try run("/usr/bin/osascript", ["-e", osa])
     }
 
+    private func resetTCCPermissions() {
+        let bundleIdentifiers = [
+            "com.elvtech.stayawake",
+            "com.elvtech.stayawake.installer"
+        ]
+        for service in ["Accessibility", "ScreenCapture"] {
+            for bundleIdentifier in bundleIdentifiers {
+                do {
+                    _ = try run("/usr/bin/tccutil", ["reset", service, bundleIdentifier])
+                    appendLog("Reset \(service) TCC record for \(bundleIdentifier).")
+                } catch {
+                    appendLog("No \(service) TCC record reset for \(bundleIdentifier): \(error)")
+                }
+            }
+        }
+    }
+
     @objc private func openStayAwake() {
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
         activePermissionWait = nil
+        let screenGranted = permissionIsGranted(.screenRecording)
+        let accessibilityGranted = permissionIsGranted(.accessibility)
+        guard screenGranted && accessibilityGranted else {
+            appendLog("Open StayAwake blocked; installed app permissions are not complete.")
+            continuePermissionWorkflow(screenGranted: screenGranted, accessibilityGranted: accessibilityGranted)
+            return
+        }
         appendLog("Opening StayAwake.")
+        do {
+            try startLaunchAgent()
+        } catch {
+            appendLog("Launch agent start failed: \(error)")
+        }
         _ = try? run("/usr/bin/open", [appPath])
         progress.doubleValue = 1
         markStep(permissionStepIndex(.screenRecording), state: "done")
@@ -873,8 +897,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accessibilityButton.isHidden = true
         launchButton.isHidden = false
         launchButton.isEnabled = true
-        statusLabel.stringValue = "StayAwake is ready"
-        detailLabel.stringValue = "Use the menu bar item to keep the Mac awake and check for updates."
+        statusLabel.stringValue = "Opening StayAwake"
+        detailLabel.stringValue = "The installer is checking that StayAwake stayed open. If macOS hides it, enable StayAwake in Menu Bar settings."
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.verifyStayAwakeOpened()
+        }
+    }
+
+    private func verifyStayAwakeOpened() {
+        if stayAwakeIsRunning() {
+            appendLog("StayAwake is running after open.")
+            statusLabel.stringValue = "StayAwake is open"
+            detailLabel.stringValue = "If the coffee cup is not in the menu bar, open System Settings > Control Center > Menu Bar and enable StayAwake."
+        } else {
+            appendLog("StayAwake did not stay running after open.")
+            statusLabel.stringValue = "StayAwake did not stay open"
+            detailLabel.stringValue = "Click Open StayAwake again. If it still does not appear, use Rollback Install and reinstall."
+            markStep(5, state: "active")
+        }
+    }
+
+    private func stayAwakeIsRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { app in
+            app.bundleIdentifier == "com.elvtech.stayawake"
+        }
     }
 
     private func openSettingsPane(_ urlString: String) {
