@@ -99,6 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stepLabels: [NSTextField] = []
     private var permissionPollTimer: Timer?
     private var activePermissionWait: PermissionKind?
+    private var manuallyAcceptedScreenRecording = false
+    private var manuallyAcceptedAccessibility = false
 
     private var installDirectoryURL: URL {
         let environment = ProcessInfo.processInfo.environment
@@ -201,7 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Download latest StayAwake release",
             "Verify GitHub checksum",
             "Install app and menu item",
-            "Grant Screen Recording and Accessibility",
+            "Grant Screen Recording",
+            "Grant Accessibility",
             "Open StayAwake"
         ] {
             let label = NSTextField(labelWithString: "[ ] \(text)")
@@ -296,6 +299,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startInstall() {
+        manuallyAcceptedScreenRecording = false
+        manuallyAcceptedAccessibility = false
         installButton.isEnabled = false
         screenButton.isEnabled = false
         accessibilityButton.isEnabled = false
@@ -538,12 +543,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handlePermissionButton(_ kind: PermissionKind) {
-        let screenGranted = permissionIsGranted(.screenRecording)
-        let accessibilityGranted = permissionIsGranted(.accessibility)
-        let requestedGranted = kind == .screenRecording ? screenGranted : accessibilityGranted
+        let isContinueClick = activePermissionWait == kind
+        let requestedGranted = permissionIsGranted(kind)
         if requestedGranted {
             appendLog("\(kind.displayName) is already granted; continuing.")
-            continuePermissionWorkflow(screenGranted: screenGranted, accessibilityGranted: accessibilityGranted)
+            continuePermissionWorkflow(
+                screenGranted: permissionIsSatisfied(.screenRecording),
+                accessibilityGranted: permissionIsSatisfied(.accessibility)
+            )
+            return
+        }
+
+        if isContinueClick {
+            setManualAcceptance(true, for: kind)
+            appendLog("\(kind.displayName) manually accepted from Continue button.")
+            continuePermissionWorkflow(
+                screenGranted: permissionIsSatisfied(.screenRecording),
+                accessibilityGranted: permissionIsSatisfied(.accessibility)
+            )
             return
         }
 
@@ -551,16 +568,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startPermissionWait(kind)
     }
 
+    private func permissionStepIndex(_ kind: PermissionKind) -> Int {
+        switch kind {
+        case .screenRecording:
+            return 3
+        case .accessibility:
+            return 4
+        }
+    }
+
+    private func permissionIsSatisfied(_ kind: PermissionKind) -> Bool {
+        switch kind {
+        case .screenRecording:
+            return manuallyAcceptedScreenRecording || permissionIsGranted(kind)
+        case .accessibility:
+            return manuallyAcceptedAccessibility || permissionIsGranted(kind)
+        }
+    }
+
+    private func setManualAcceptance(_ accepted: Bool, for kind: PermissionKind) {
+        switch kind {
+        case .screenRecording:
+            manuallyAcceptedScreenRecording = accepted
+        case .accessibility:
+            manuallyAcceptedAccessibility = accepted
+        }
+    }
+
     private func beginPermissionWorkflow() {
-        let screenGranted = permissionIsGranted(.screenRecording)
-        let accessibilityGranted = permissionIsGranted(.accessibility)
+        let screenGranted = permissionIsSatisfied(.screenRecording)
+        let accessibilityGranted = permissionIsSatisfied(.accessibility)
         continuePermissionWorkflow(screenGranted: screenGranted, accessibilityGranted: accessibilityGranted)
     }
 
     private func continuePermissionWorkflow(screenGranted: Bool, accessibilityGranted: Bool) {
+        if screenGranted {
+            markStep(permissionStepIndex(.screenRecording), state: "done")
+        }
         if !screenGranted {
             showPermissionStep(.screenRecording)
             return
+        }
+        if accessibilityGranted {
+            markStep(permissionStepIndex(.accessibility), state: "done")
         }
         if !accessibilityGranted {
             showPermissionStep(.accessibility)
@@ -587,7 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launchButton.isEnabled = false
         statusLabel.stringValue = "Grant \(kind.displayName)"
         detailLabel.stringValue = "Click the \(kind.displayName) button, turn StayAwake on in System Settings, and the installer will continue automatically. If it does not move, click the button again to recheck."
-        markStep(3, state: "active")
+        markStep(permissionStepIndex(kind), state: "active")
         schedulePermissionPolling(kind)
     }
 
@@ -605,7 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appendLog("Opening \(kind.displayName) settings. Toggle StayAwake on; installer is waiting quietly.")
         openSettingsPane(kind.settingsURL)
         progress.doubleValue = max(progress.doubleValue, 0.90)
-        markStep(3, state: "active")
+        markStep(permissionStepIndex(kind), state: "active")
         schedulePermissionPolling(kind)
     }
 
@@ -623,8 +673,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pollPermission(_ kind: PermissionKind) {
         DispatchQueue.global(qos: .utility).async {
             let granted = self.permissionIsGranted(kind)
-            let screenGranted = self.permissionIsGranted(.screenRecording)
-            let accessibilityGranted = self.permissionIsGranted(.accessibility)
+            let screenGranted = self.permissionIsSatisfied(.screenRecording)
+            let accessibilityGranted = self.permissionIsSatisfied(.accessibility)
             DispatchQueue.main.async {
                 guard self.activePermissionWait == kind else {
                     return
@@ -816,8 +866,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appendLog("Opening StayAwake.")
         _ = try? run("/usr/bin/open", [appPath])
         progress.doubleValue = 1
-        markStep(3, state: "done")
-        markStep(4, state: "done")
+        markStep(permissionStepIndex(.screenRecording), state: "done")
+        markStep(permissionStepIndex(.accessibility), state: "done")
+        markStep(5, state: "done")
         screenButton.isHidden = true
         accessibilityButton.isHidden = true
         launchButton.isHidden = false
