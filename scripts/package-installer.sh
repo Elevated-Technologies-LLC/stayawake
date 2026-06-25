@@ -88,6 +88,12 @@ swiftc -O -parse-as-library \
 chmod 755 "$app_dir/Contents/MacOS/$app_name"
 
 cp -X "$ROOT/Assets/StayAwake.icns" "$app_dir/Contents/Resources/AppIcon.icns"
+if [[ -f "$dist/StayAwake-mac-arm64.zip" && -f "$dist/stayawake-manifest.json" ]]; then
+  cp -X "$dist/StayAwake-mac-arm64.zip" "$app_dir/Contents/Resources/StayAwake-mac-arm64.zip"
+  cp -X "$dist/stayawake-manifest.json" "$app_dir/Contents/Resources/stayawake-manifest.json"
+else
+  printf 'Warning: app package assets were not found; installer will download the current public release at runtime.\n' >&2
+fi
 
 cat > "$app_dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

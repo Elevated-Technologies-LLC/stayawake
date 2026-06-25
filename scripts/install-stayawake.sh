@@ -73,7 +73,7 @@ installer_manifest_url() {
 
 APP_MANIFEST_URL="$(update_manifest_url)"
 INSTALLER_MANIFEST_URL="$(installer_manifest_url)"
-INSTALL_DIR="${STAYAWAKE_INSTALL_DIR:-$HOME/Applications}"
+INSTALL_DIR="${STAYAWAKE_INSTALL_DIR:-/Applications}"
 APP_PATH="$INSTALL_DIR/StayAwake.app"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.elvtech.stayawake.plist"
 LOG_DIR="$HOME/Library/Logs"
@@ -220,15 +220,21 @@ run_direct_install() {
   <key>Label</key>
   <string>com.elvtech.stayawake</string>
   <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/open</string>
-    <string>-W</string>
-    <string>$APP_PATH</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
+	  <array>
+	    <string>/usr/bin/open</string>
+	    <string>-gj</string>
+	    <string>$APP_PATH</string>
+	  </array>
+	  <key>AssociatedBundleIdentifiers</key>
+	  <array>
+	    <string>com.elvtech.stayawake</string>
+	  </array>
+	  <key>LimitLoadToSessionType</key>
+	  <string>Aqua</string>
+	  <key>RunAtLoad</key>
+	  <true/>
+	  <key>KeepAlive</key>
+	  <false/>
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>StandardOutPath</key>

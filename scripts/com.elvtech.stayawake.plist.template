@@ -8,13 +8,19 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/open</string>
-    <string>-W</string>
-    <string>/Users/michaelreaves/Applications/StayAwake.app</string>
+    <string>-gj</string>
+    <string>/Applications/StayAwake.app</string>
   </array>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>com.elvtech.stayawake</string>
+  </array>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <false/>
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>StandardOutPath</key>

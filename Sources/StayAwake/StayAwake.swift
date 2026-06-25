@@ -102,8 +102,11 @@ final class MugButtonView: NSView {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
+    private var statusMenuStateItem: NSMenuItem?
+    private var statusMenuToggleItem: NSMenuItem?
+    private var statusMenuVersionItem: NSMenuItem?
     private var awakeTopMenuItem: NSMenuItem?
     private var menuStatusItem: NSMenuItem?
     private var menuToggleItem: NSMenuItem?
@@ -134,13 +137,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         caffeinateProcess?.isRunning == true
     }
 
+    var statusSummaryTitle: String {
+        isAwake ? "Status: Awake is on" : "Status: Sleep is allowed"
+    }
+
+    var toggleActionTitle: String {
+        isAwake ? "Turn Off" : "Turn On"
+    }
+
+    var updateActionTitle: String {
+        let updateAvailableTitle = availableUpdateManifest.map { "Update available (\($0.version))" } ?? "Check for Updates..."
+        if isCheckingForUpdates {
+            return "Checking for Updates..."
+        }
+        if isInstallingUpdate {
+            return "Installing Update..."
+        }
+        return updateAvailableTitle
+    }
+
+    var updateActionEnabled: Bool {
+        !isCheckingForUpdates && !isInstallingUpdate
+    }
+
+    var menuBarSymbolName: String {
+        isAwake ? "cup.and.saucer.fill" : "cup.and.saucer"
+    }
+
+    var versionDisplayTitle: String {
+        versionMenuTitle()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if activateExistingInstanceIfNeeded() {
             NSApp.terminate(nil)
             return
         }
 
-        NSApp.setActivationPolicy(.accessory)
+        clearLegacyStatusItemPreferences()
         setupMainMenu()
         setupMenuBarIcon()
         requestRequiredPermissionsIfNeeded()
@@ -214,6 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApp() {
+        stopLaunchAgentForCurrentSession()
         NSApp.terminate(nil)
     }
 
@@ -237,15 +272,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installUpdate(manifest)
     }
 
+    func toggleFromMenuBar() {
+        toggleAwake()
+    }
+
+    func checkOrInstallUpdateFromMenuBar() {
+        checkOrInstallUpdateFromStatusMenu()
+    }
+
+    func showAboutFromMenuBar() {
+        showAboutPanel()
+    }
+
+    func quitFromMenuBar() {
+        quitApp()
+    }
+
+    private func clearLegacyStatusItemPreferences() {
+        let defaults = UserDefaults.standard
+        guard let domain = defaults.persistentDomain(forName: appBundleIdentifier) else {
+            return
+        }
+
+        let legacyKeys = domain.keys.filter { $0.hasPrefix("NSStatusItem ") }
+        guard !legacyKeys.isEmpty else {
+            return
+        }
+
+        for key in legacyKeys {
+            defaults.removeObject(forKey: key)
+        }
+
+        defaults.synchronize()
+        log("cleared legacy status item preferences: \(legacyKeys.joined(separator: ", "))")
+    }
+
     private func setupMenuBarIcon() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.target = self
-        item.button?.action = #selector(statusItemClicked)
-        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        item.autosaveName = "com.elvtech.stayawake.statusitem"
+        // Avoid restoring a stale menu bar slot. Some Macs can keep a bad
+        // saved position that leaves the status item hidden behind system extras.
+        item.isVisible = true
+        if let button = item.button {
+            configureStatusButton(button)
+            log("status item created; button=true length=\(item.length)")
+        } else {
+            log("status item created; button=false length=\(item.length)")
+        }
+
+        let menu = buildStatusMenu()
+        item.menu = menu
         statusItem = item
-        log("status item created; button=\(item.button != nil)")
         updateStatusTitle()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.logStatusItemPlacement(reason: "after 1s")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.logStatusItemPlacement(reason: "after 5s")
+        }
+    }
+
+    private func configureStatusButton(_ button: NSStatusBarButton) {
+        let icon = mugImage(on: isAwake)
+        icon.size = NSSize(width: 24, height: 18)
+        button.image = icon
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.attributedTitle = NSAttributedString(string: "")
+        button.toolTip = isAwake ? "StayAwake is on" : "StayAwake is off"
+        button.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        let statusItem = NSMenuItem(title: statusSummaryTitle, action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        statusMenuStateItem = statusItem
+        menu.addItem(statusItem)
+        menu.addItem(.separator())
+
+        let toggleItem = NSMenuItem(title: toggleActionTitle, action: #selector(toggleAwake), keyEquivalent: "")
+        toggleItem.target = self
+        statusMenuToggleItem = toggleItem
+        menu.addItem(toggleItem)
+        menu.addItem(.separator())
+
+        let updateItem = NSMenuItem(title: updateActionTitle, action: #selector(checkOrInstallUpdateFromStatusMenu), keyEquivalent: "")
+        updateItem.target = self
+        statusMenuUpdateItem = updateItem
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
+
+        let aboutItem = NSMenuItem(title: "About StayAwake", action: #selector(showAboutPanel), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
+        let versionItem = NSMenuItem(title: versionMenuTitle(), action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        statusMenuVersionItem = versionItem
+        menu.addItem(versionItem)
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit StayAwake", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    private func logStatusItemPlacement(reason: String) {
+        guard let item = statusItem else {
+            log("status item placement \(reason): missing item")
+            return
+        }
+        guard let button = item.button else {
+            log("status item placement \(reason): missing button")
+            return
+        }
+
+        let frame = NSStringFromRect(button.frame)
+        let bounds = NSStringFromRect(button.bounds)
+        let windowFrame = button.window.map { NSStringFromRect($0.frame) } ?? "nil"
+        let screenFrame = button.window?.screen.map { NSStringFromRect($0.frame) } ?? "nil"
+        let visibleFrame = button.window?.screen.map { NSStringFromRect($0.visibleFrame) } ?? "nil"
+        log("status item placement \(reason): itemVisible=\(item.isVisible) frame=\(frame) bounds=\(bounds) windowFrame=\(windowFrame) screenFrame=\(screenFrame) visibleFrame=\(visibleFrame) title='\(button.title)' image=\(button.image != nil)")
     }
 
     private func setupMainMenu() {
@@ -485,13 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusTitle() {
         if let button = statusItem?.button {
-            button.image = mugImage(on: isAwake)
-            button.imagePosition = .imageOnly
-            button.title = ""
-            button.attributedTitle = NSAttributedString(string: "")
-            button.toolTip = isAwake
-                ? "StayAwake is on"
-                : "StayAwake is off"
+            configureStatusButton(button)
         }
         updateMenuStatus()
         log("status item updated; isAwake=\(isAwake)")
@@ -507,10 +651,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateMenuStatus() {
+        objectWillChange.send()
+
         let awake = isAwake
         awakeTopMenuItem?.title = awake ? "Awake On" : "Sleep OK"
         menuStatusItem?.title = awake ? "Status: Awake is on" : "Status: Sleep is allowed"
         menuToggleItem?.title = awake ? "Turn Off" : "Turn On"
+        statusMenuStateItem?.title = awake ? "Status: Awake is on" : "Status: Sleep is allowed"
+        statusMenuToggleItem?.title = awake ? "Turn Off" : "Turn On"
+        statusMenuVersionItem?.title = versionMenuTitle()
 
         let updateAvailableTitle = availableUpdateManifest.map { "Update available (\($0.version))" } ?? "Check for Updates..."
         let canUseUpdateItems = !isCheckingForUpdates && !isInstallingUpdate
@@ -579,6 +728,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if on {
             NSColor(calibratedRed: 0.88, green: 0.70, blue: 0.48, alpha: 1.0).setFill()
             NSBezierPath(roundedRect: NSRect(x: 5.5, y: 11.0, width: 10.0, height: 2.0), xRadius: 1.0, yRadius: 1.0).fill()
+            let steamColor = NSColor(calibratedWhite: 0.98, alpha: 0.92)
+            for x in [7.0, 11.0, 15.0] {
+                let steam = NSBezierPath()
+                steam.move(to: NSPoint(x: x, y: 15.0))
+                steam.curve(
+                    to: NSPoint(x: x + 1.2, y: 18.0),
+                    controlPoint1: NSPoint(x: x - 1.0, y: 16.0),
+                    controlPoint2: NSPoint(x: x + 1.8, y: 17.0)
+                )
+                steamColor.setStroke()
+                steam.lineWidth = 1.2
+                steam.lineCapStyle = .round
+                steam.stroke()
+            }
         }
 
         image.unlockFocus()
@@ -873,6 +1036,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             // Logging must never interfere with keeping the Mac awake.
+        }
+    }
+
+    private func stopLaunchAgentForCurrentSession() {
+        let plist = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.elvtech.stayawake.plist")
+        let domain = "gui/\(getuid())"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["bootout", domain, plist.path]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            log("requested launch agent bootout before quit status=\(process.terminationStatus)")
+        } catch {
+            log("launch agent bootout before quit failed: \(error.localizedDescription)")
         }
     }
 }
