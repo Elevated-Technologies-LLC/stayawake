@@ -1,10 +1,13 @@
 import AppKit
 import CryptoKit
 import Darwin
-import ApplicationServices
-import CoreGraphics
+import ServiceManagement
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
+private let launchAgentLabel = "com.elvtech.stayawake"
+private let statusItemAutosaveName: NSStatusItem.AutosaveName = "StayAwakeStatusItem"
+private let statusItemPreferredPositionKey = "NSStatusItem Preferred Position StayAwakeStatusItem"
+private let statusItemDefaultPreferredPosition = 240
 private let updateManifestURL = stayAwakeUpdateManifestURL()
 
 private struct UpdateManifest: Decodable {
@@ -25,21 +28,6 @@ private struct UpdateAsset: Decodable {
     let url: String
     let sha256: String
     let size: Int?
-}
-
-private enum UtilityCommand: String {
-    case checkAccessibility = "--check-accessibility"
-    case checkScreenRecording = "--check-screen-recording"
-}
-
-private func handleUtilityCommandIfNeeded() {
-    let arguments = Set(CommandLine.arguments.dropFirst())
-    if arguments.contains(UtilityCommand.checkAccessibility.rawValue) {
-        exit(AXIsProcessTrusted() ? EXIT_SUCCESS : EXIT_FAILURE)
-    }
-    if arguments.contains(UtilityCommand.checkScreenRecording.rawValue) {
-        exit(CGPreflightScreenCaptureAccess() ? EXIT_SUCCESS : EXIT_FAILURE)
-    }
 }
 
 protocol MugButtonDelegate: AnyObject {
@@ -102,20 +90,28 @@ final class MugButtonView: NSView {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
+    private var statusMenuStateItem: NSMenuItem?
+    private var statusMenuToggleItem: NSMenuItem?
+    private var statusMenuLaunchAtLoginItem: NSMenuItem?
+    private var statusMenuVersionItem: NSMenuItem?
     private var awakeTopMenuItem: NSMenuItem?
     private var menuStatusItem: NSMenuItem?
     private var menuToggleItem: NSMenuItem?
+    private var menuLaunchAtLoginItem: NSMenuItem?
     private var menuUpdateItem: NSMenuItem?
+    private var awakeMenuLaunchAtLoginItem: NSMenuItem?
     private var awakeMenuUpdateItem: NSMenuItem?
     private var statusMenuUpdateItem: NSMenuItem?
     private var availableUpdateManifest: UpdateManifest?
     private var caffeinateProcess: Process?
     private var userActivityProcesses: [Int32: Process] = [:]
     private var watchdogTimer: Timer?
+    private var statusItemWatchdogTimer: Timer?
     private var userActivityTimer: Timer?
     private var updateTimer: Timer?
+    private var lastStatusItemAttached: Bool?
     private var isCheckingForUpdates = false
     private var isInstallingUpdate = false
     private var wantsAwake = true
@@ -129,9 +125,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .appendingPathComponent("Library/Application Support/StayAwake")
     private lazy var caffeinatePIDURL = stateDirectoryURL
         .appendingPathComponent("caffeinate.pid")
+    private var legacyLaunchAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
+    }
 
     private var isAwake: Bool {
         caffeinateProcess?.isRunning == true
+    }
+
+    var statusSummaryTitle: String {
+        isAwake ? "Status: Awake is on" : "Status: Sleep is allowed"
+    }
+
+    var toggleActionTitle: String {
+        isAwake ? "Turn Off" : "Turn On"
+    }
+
+    var updateActionTitle: String {
+        let updateAvailableTitle = availableUpdateManifest.map { "Update available (\($0.version))" } ?? "Check for Updates..."
+        if isCheckingForUpdates {
+            return "Checking for Updates..."
+        }
+        if isInstallingUpdate {
+            return "Installing Update..."
+        }
+        return updateAvailableTitle
+    }
+
+    var updateActionEnabled: Bool {
+        !isCheckingForUpdates && !isInstallingUpdate
+    }
+
+    var menuBarSymbolName: String {
+        isAwake ? "cup.and.saucer.fill" : "cup.and.saucer"
+    }
+
+    var versionDisplayTitle: String {
+        versionMenuTitle()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -140,11 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        NSApp.setActivationPolicy(.accessory)
         setupMainMenu()
+        migrateLegacyLaunchAgentIfNeeded()
+        handleLaunchArguments()
         setupMenuBarIcon()
-        requestRequiredPermissionsIfNeeded()
         startWatchdog()
+        startStatusItemWatchdog()
         startUpdateChecks()
         cleanupStaleCaffeinate()
         log("launched")
@@ -164,42 +196,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func requestRequiredPermissionsIfNeeded() {
-        let trustedAccessibility = AXIsProcessTrusted()
-        log("accessibility permission check: trusted=\(trustedAccessibility)")
-        if !trustedAccessibility {
-            let promptResult = AXIsProcessTrustedWithOptions([
-                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-            ] as CFDictionary)
-            log("accessibility permission prompt result=\(promptResult)")
-            if !promptResult {
-                showInfo(
-                    """
-                    StayAwake needs Accessibility permission to keep the system awake reliably.
-                    If you do not see the permission prompt, open:
-                    System Settings > Privacy & Security > Accessibility
-                    and enable StayAwake.
-                    """
-                )
-            }
-        }
-
-        let trustedScreenRecording = CGPreflightScreenCaptureAccess()
-        log("screen recording permission check: trusted=\(trustedScreenRecording)")
-        if !trustedScreenRecording {
-            let promptResult = CGRequestScreenCaptureAccess()
-            log("screen recording permission prompt result=\(promptResult)")
-        }
-    }
-
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
         watchdogTimer?.invalidate()
         watchdogTimer = nil
+        statusItemWatchdogTimer?.invalidate()
+        statusItemWatchdogTimer = nil
         updateTimer?.invalidate()
         updateTimer = nil
         stopUserActivityPulses()
         log("terminating")
+        removeStatusItem(reason: "application terminating")
         stopAwake()
     }
 
@@ -214,7 +221,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApp() {
+        stopLegacyLaunchAgentForCurrentSession()
         NSApp.terminate(nil)
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if isLaunchAtLoginEnabled() {
+                try disableLaunchAtLogin()
+                log("launch at login disabled from menu")
+            } else {
+                try enableLaunchAtLogin()
+                log("launch at login enabled from menu")
+            }
+        } catch {
+            log("launch at login toggle failed: \(error.localizedDescription)")
+            showError("Could not update Launch at Login: \(error.localizedDescription)")
+        }
+        updateMenuStatus()
     }
 
     @objc private func checkForUpdatesFromMenu() {
@@ -237,15 +261,167 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installUpdate(manifest)
     }
 
+    func toggleFromMenuBar() {
+        toggleAwake()
+    }
+
+    func checkOrInstallUpdateFromMenuBar() {
+        checkOrInstallUpdateFromStatusMenu()
+    }
+
+    func showAboutFromMenuBar() {
+        showAboutPanel()
+    }
+
+    func quitFromMenuBar() {
+        quitApp()
+    }
+
     private func setupMenuBarIcon() {
+        seedStatusItemPreferredPositionIfNeeded()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.target = self
-        item.button?.action = #selector(statusItemClicked)
-        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        item.autosaveName = "com.elvtech.stayawake.statusitem"
+        // Let macOS persist the status item visibility and menu bar position
+        // under this app identity. Resetting these preferences on launch can
+        // make Control Center forget that StayAwake is allowed in the menu bar.
+        item.autosaveName = statusItemAutosaveName
+        item.isVisible = true
+        if let button = item.button {
+            configureStatusButton(button)
+            log("status item created; button=true length=\(item.length)")
+        } else {
+            log("status item created; button=false length=\(item.length)")
+        }
+
+        let menu = buildStatusMenu()
+        item.menu = menu
         statusItem = item
-        log("status item created; button=\(item.button != nil)")
         updateStatusTitle()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.logStatusItemPlacement(reason: "after 1s")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.logStatusItemPlacement(reason: "after 5s")
+        }
+    }
+
+    private func seedStatusItemPreferredPositionIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: statusItemPreferredPositionKey) == nil else {
+            log("status item preferred position exists; key=\(statusItemPreferredPositionKey) value=\(defaults.integer(forKey: statusItemPreferredPositionKey))")
+            return
+        }
+
+        defaults.set(statusItemDefaultPreferredPosition, forKey: statusItemPreferredPositionKey)
+        defaults.synchronize()
+        log("seeded status item preferred position; key=\(statusItemPreferredPositionKey) value=\(statusItemDefaultPreferredPosition)")
+    }
+
+    private func configureStatusButton(_ button: NSStatusBarButton) {
+        let icon = mugImage(on: isAwake)
+        icon.size = NSSize(width: 24, height: 18)
+        button.image = icon
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.attributedTitle = NSAttributedString(string: "")
+        button.toolTip = isAwake ? "StayAwake is on" : "StayAwake is off"
+        button.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        let statusItem = NSMenuItem(title: statusSummaryTitle, action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        statusMenuStateItem = statusItem
+        menu.addItem(statusItem)
+        menu.addItem(.separator())
+
+        let toggleItem = NSMenuItem(title: toggleActionTitle, action: #selector(toggleAwake), keyEquivalent: "")
+        toggleItem.target = self
+        statusMenuToggleItem = toggleItem
+        menu.addItem(toggleItem)
+        menu.addItem(.separator())
+
+        let launchAtLoginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        launchAtLoginItem.target = self
+        statusMenuLaunchAtLoginItem = launchAtLoginItem
+        menu.addItem(launchAtLoginItem)
+        menu.addItem(.separator())
+
+        let updateItem = NSMenuItem(title: updateActionTitle, action: #selector(checkOrInstallUpdateFromStatusMenu), keyEquivalent: "")
+        updateItem.target = self
+        statusMenuUpdateItem = updateItem
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
+
+        let aboutItem = NSMenuItem(title: "About StayAwake", action: #selector(showAboutPanel), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
+        let versionItem = NSMenuItem(title: versionMenuTitle(), action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        statusMenuVersionItem = versionItem
+        menu.addItem(versionItem)
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit StayAwake", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    private func logStatusItemPlacement(reason: String) {
+        guard let item = statusItem else {
+            log("status item placement \(reason): missing item")
+            return
+        }
+        guard let button = item.button else {
+            log("status item placement \(reason): missing button")
+            return
+        }
+
+        let frame = NSStringFromRect(button.frame)
+        let bounds = NSStringFromRect(button.bounds)
+        let windowFrame = button.window.map { NSStringFromRect($0.frame) } ?? "nil"
+        let screenFrame = button.window?.screen.map { NSStringFromRect($0.frame) } ?? "nil"
+        let visibleFrame = button.window?.screen.map { NSStringFromRect($0.visibleFrame) } ?? "nil"
+        log("status item placement \(reason): itemVisible=\(item.isVisible) frame=\(frame) bounds=\(bounds) windowFrame=\(windowFrame) screenFrame=\(screenFrame) visibleFrame=\(visibleFrame) title='\(button.title)' image=\(button.image != nil)")
+    }
+
+    private func startStatusItemWatchdog() {
+        statusItemWatchdogTimer?.invalidate()
+        statusItemWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.verifyStatusItemLifecycle()
+        }
+    }
+
+    private func verifyStatusItemLifecycle() {
+        guard let item = statusItem, let button = item.button else {
+            log("status item removal detected; recreating status item")
+            setupMenuBarIcon()
+            return
+        }
+
+        let attached = item.isVisible && button.window?.screen != nil
+        if lastStatusItemAttached != attached {
+            lastStatusItemAttached = attached
+            log("status item attachment changed; attached=\(attached) itemVisible=\(item.isVisible)")
+            logStatusItemPlacement(reason: attached ? "watchdog attached" : "watchdog detached")
+        }
+
+        if !item.isVisible {
+            item.isVisible = true
+            log("status item visibility was false; requested visible=true")
+        }
+    }
+
+    private func removeStatusItem(reason: String) {
+        guard let item = statusItem else { return }
+        log("status item removal requested: \(reason)")
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+        lastStatusItemAttached = nil
     }
 
     private func setupMainMenu() {
@@ -259,6 +435,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appToggle.target = self
         appMenu.addItem(appStatus)
         appMenu.addItem(appToggle)
+        appMenu.addItem(NSMenuItem.separator())
+        let appLaunchAtLogin = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        appLaunchAtLogin.target = self
+        appMenu.addItem(appLaunchAtLogin)
         appMenu.addItem(NSMenuItem.separator())
         let appUpdate = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
         appUpdate.target = self
@@ -285,6 +465,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         awakeMenu.addItem(awakeStatus)
         awakeMenu.addItem(awakeToggle)
         awakeMenu.addItem(NSMenuItem.separator())
+        let awakeLaunchAtLogin = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        awakeLaunchAtLogin.target = self
+        awakeMenu.addItem(awakeLaunchAtLogin)
+        awakeMenu.addItem(NSMenuItem.separator())
         let awakeUpdate = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
         awakeUpdate.target = self
         awakeMenu.addItem(awakeUpdate)
@@ -303,7 +487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         awakeTopMenuItem = awakeMenuItem
         menuStatusItem = appStatus
         menuToggleItem = appToggle
+        menuLaunchAtLoginItem = appLaunchAtLogin
         menuUpdateItem = appUpdate
+        awakeMenuLaunchAtLoginItem = awakeLaunchAtLogin
         awakeMenuUpdateItem = awakeUpdate
         updateMenuStatus()
     }
@@ -467,6 +653,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @discardableResult
+    private func runProcess(_ executable: String, _ arguments: [String]) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        let error = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        process.waitUntilExit()
+
+        var data = Data()
+        data.append(output.fileHandleForReading.readDataToEndOfFile())
+        data.append(error.fileHandleForReading.readDataToEndOfFile())
+        let text = String(data: data, encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            throw NSError(
+                domain: "StayAwakeProcess",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? "\(executable) failed" : text]
+            )
+        }
+        return text
+    }
+
     private func writeCaffeinatePID(_ pid: Int32) {
         do {
             try FileManager.default.createDirectory(
@@ -485,13 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusTitle() {
         if let button = statusItem?.button {
-            button.image = mugImage(on: isAwake)
-            button.imagePosition = .imageOnly
-            button.title = ""
-            button.attributedTitle = NSAttributedString(string: "")
-            button.toolTip = isAwake
-                ? "StayAwake is on"
-                : "StayAwake is off"
+            configureStatusButton(button)
         }
         updateMenuStatus()
         log("status item updated; isAwake=\(isAwake)")
@@ -507,10 +713,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateMenuStatus() {
+        objectWillChange.send()
+
         let awake = isAwake
         awakeTopMenuItem?.title = awake ? "Awake On" : "Sleep OK"
         menuStatusItem?.title = awake ? "Status: Awake is on" : "Status: Sleep is allowed"
         menuToggleItem?.title = awake ? "Turn Off" : "Turn On"
+        statusMenuStateItem?.title = awake ? "Status: Awake is on" : "Status: Sleep is allowed"
+        statusMenuToggleItem?.title = awake ? "Turn Off" : "Turn On"
+        statusMenuVersionItem?.title = versionMenuTitle()
+        let launchState = launchAtLoginMenuState()
+        statusMenuLaunchAtLoginItem?.state = launchState
+        menuLaunchAtLoginItem?.state = launchState
+        awakeMenuLaunchAtLoginItem?.state = launchState
 
         let updateAvailableTitle = availableUpdateManifest.map { "Update available (\($0.version))" } ?? "Check for Updates..."
         let canUseUpdateItems = !isCheckingForUpdates && !isInstallingUpdate
@@ -529,6 +744,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let awakeMenu = awakeTopMenuItem?.submenu {
             awakeMenu.item(at: 0)?.title = awake ? "Awake is on" : "Sleep is allowed"
             awakeMenu.item(at: 1)?.title = awake ? "Turn Off" : "Turn On"
+        }
+    }
+
+    private func isLaunchAtLoginEnabled() -> Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    private func enableLaunchAtLogin() throws {
+        if SMAppService.mainApp.status != .enabled {
+            try SMAppService.mainApp.register()
+        }
+    }
+
+    private func disableLaunchAtLogin() throws {
+        if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
+            try SMAppService.mainApp.unregister()
+        }
+        try removeLegacyLaunchAgent()
+    }
+
+    private func launchAtLoginMenuState() -> NSControl.StateValue {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            return .on
+        case .requiresApproval:
+            return .mixed
+        default:
+            return .off
+        }
+    }
+
+    private func handleLaunchArguments() {
+        guard CommandLine.arguments.contains("--enable-login-item") else { return }
+        do {
+            try enableLaunchAtLogin()
+            log("launch at login enabled from installer launch argument; status=\(SMAppService.mainApp.status.rawValue)")
+        } catch {
+            log("installer requested launch at login but SMAppService registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func migrateLegacyLaunchAgentIfNeeded() {
+        guard FileManager.default.fileExists(atPath: legacyLaunchAgentURL.path) else { return }
+        log("legacy LaunchAgent found; migrating to SMAppService")
+        do {
+            stopLegacyLaunchAgentForCurrentSession()
+            try removeLegacyLaunchAgent()
+            if SMAppService.mainApp.status != .enabled {
+                try SMAppService.mainApp.register()
+            }
+            log("legacy LaunchAgent migrated to SMAppService; status=\(SMAppService.mainApp.status.rawValue)")
+        } catch {
+            log("legacy LaunchAgent migration failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func removeLegacyLaunchAgent() throws {
+        let domain = "gui/\(getuid())"
+        _ = try? runProcess("/bin/launchctl", ["bootout", domain, legacyLaunchAgentURL.path])
+        if FileManager.default.fileExists(atPath: legacyLaunchAgentURL.path) {
+            try FileManager.default.removeItem(at: legacyLaunchAgentURL)
         }
     }
 
@@ -579,6 +855,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if on {
             NSColor(calibratedRed: 0.88, green: 0.70, blue: 0.48, alpha: 1.0).setFill()
             NSBezierPath(roundedRect: NSRect(x: 5.5, y: 11.0, width: 10.0, height: 2.0), xRadius: 1.0, yRadius: 1.0).fill()
+            let steamColor = NSColor(calibratedWhite: 0.98, alpha: 0.92)
+            for x in [7.0, 11.0, 15.0] {
+                let steam = NSBezierPath()
+                steam.move(to: NSPoint(x: x, y: 15.0))
+                steam.curve(
+                    to: NSPoint(x: x + 1.2, y: 18.0),
+                    controlPoint1: NSPoint(x: x - 1.0, y: 16.0),
+                    controlPoint2: NSPoint(x: x + 1.8, y: 17.0)
+                )
+                steamColor.setStroke()
+                steam.lineWidth = 1.2
+                steam.lineCapStyle = .round
+                steam.stroke()
+            }
         }
 
         image.unlockFocus()
@@ -875,6 +1165,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Logging must never interfere with keeping the Mac awake.
         }
     }
+
+    private func stopLegacyLaunchAgentForCurrentSession() {
+        let domain = "gui/\(getuid())"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["bootout", domain, legacyLaunchAgentURL.path]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            log("requested legacy launch agent bootout status=\(process.terminationStatus)")
+        } catch {
+            log("legacy launch agent bootout failed: \(error.localizedDescription)")
+        }
+    }
 }
 
 @main
@@ -882,7 +1188,6 @@ private enum StayAwakeApp {
     private static var delegate: AppDelegate?
 
     static func main() {
-        handleUtilityCommandIfNeeded()
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

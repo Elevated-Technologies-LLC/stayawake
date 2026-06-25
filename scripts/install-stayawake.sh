@@ -73,7 +73,7 @@ installer_manifest_url() {
 
 APP_MANIFEST_URL="$(update_manifest_url)"
 INSTALLER_MANIFEST_URL="$(installer_manifest_url)"
-INSTALL_DIR="${STAYAWAKE_INSTALL_DIR:-$HOME/Applications}"
+INSTALL_DIR="${STAYAWAKE_INSTALL_DIR:-/Applications}"
 APP_PATH="$INSTALL_DIR/StayAwake.app"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.elvtech.stayawake.plist"
 LOG_DIR="$HOME/Library/Logs"
@@ -133,6 +133,41 @@ verify_sha() {
       exit 1
     fi
   fi
+}
+
+reset_tcc_permissions() {
+  local service bundle_id
+  for service in Accessibility ScreenCapture; do
+    for bundle_id in com.elvtech.stayawake com.elvtech.stayawake.installer; do
+      /usr/bin/tccutil reset "$service" "$bundle_id" >/dev/null 2>&1 || true
+    done
+  done
+}
+
+remove_path() {
+  local target="$1"
+  [[ -e "$target" ]] || return 0
+  if /bin/rm -rf "$target" 2>/dev/null; then
+    return 0
+  fi
+  local quoted
+  quoted="$(printf "%q" "$target")"
+  /usr/bin/osascript -e "do shell script \"/bin/rm -rf $quoted\" with administrator privileges" >/dev/null
+}
+
+run_uninstall() {
+  local domain
+  domain="gui/$(/usr/bin/id -u)"
+  /bin/launchctl bootout "$domain" "$LAUNCH_AGENT" >/dev/null 2>&1 || true
+  /bin/launchctl disable "$domain/com.elvtech.stayawake" >/dev/null 2>&1 || true
+  /usr/bin/pkill -x StayAwake >/dev/null 2>&1 || true
+  /usr/bin/pkill -x caffeinate >/dev/null 2>&1 || true
+  /bin/rm -f "$LAUNCH_AGENT"
+  remove_path "$APP_PATH" || true
+  remove_path "$HOME/Applications/StayAwake.app" || true
+  remove_path "/Applications/StayAwake.app" || true
+  reset_tcc_permissions
+  echo "StayAwake app, launch agent, and TCC permission records were removed."
 }
 
 run_gui_installer() {
@@ -210,39 +245,9 @@ run_direct_install() {
   /usr/bin/ditto "$WORK_DIR/StayAwake.app" "$APP_PATH"
   /usr/bin/xattr -cr "$APP_PATH" >/dev/null 2>&1 || true
 
-  mkdir -p "$(dirname "$LAUNCH_AGENT")"
-  cat > "$LAUNCH_AGENT" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.elvtech.stayawake</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/open</string>
-    <string>-W</string>
-    <string>$APP_PATH</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>ProcessType</key>
-  <string>Interactive</string>
-  <key>StandardOutPath</key>
-  <string>$LOG_DIR/StayAwake.launchd.log</string>
-  <key>StandardErrorPath</key>
-  <string>$LOG_DIR/StayAwake.launchd.err</string>
-</dict>
-</plist>
-PLIST
-
   /bin/launchctl bootout "gui/$(/usr/bin/id -u)" "$LAUNCH_AGENT" >/dev/null 2>&1 || true
-  /bin/launchctl bootstrap "gui/$(/usr/bin/id -u)" "$LAUNCH_AGENT" >/dev/null 2>&1 || true
-  /bin/launchctl enable "gui/$(/usr/bin/id -u)/com.elvtech.stayawake" >/dev/null 2>&1 || true
-  /usr/bin/open "$APP_PATH"
+  /bin/rm -f "$LAUNCH_AGENT"
+  /usr/bin/open -g "$APP_PATH" --args --enable-login-item
 
   echo "StayAwake installed at $APP_PATH"
 }
@@ -256,6 +261,9 @@ case "$MODE" in
     ;;
   direct)
     run_direct_install
+    ;;
+  uninstall)
+    run_uninstall
     ;;
   *)
     echo "Unknown STAYAWAKE_INSTALL_MODE: $MODE" >&2
