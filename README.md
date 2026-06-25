@@ -10,7 +10,7 @@ Install the latest release:
 /bin/bash -c "$(curl -fsSL https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/install-stayawake.sh)"
 ```
 
-When that command is run in a normal local Terminal session, it launches the graphical `Install StayAwake` app. The installer shows download progress, verifies the GitHub checksum, installs the app, sets up the menu bar launch agent, and walks the user through Screen Recording and Accessibility if macOS still needs them.
+When that command is run in a normal local Terminal session, it launches the graphical `Install StayAwake` app. The installer shows download progress, verifies the GitHub checksum, installs the app, sets up the menu bar launch agent, and opens StayAwake. StayAwake uses macOS `caffeinate` and does not require Screen Recording or Accessibility permission.
 
 When the same command is run over SSH or in automation, it falls back to the direct non-interactive install flow and places the app in `/Applications/StayAwake.app`, registers a user LaunchAgent, and starts the app.
 
@@ -20,7 +20,7 @@ Force the direct automation path:
 STAYAWAKE_INSTALL_MODE=direct /bin/bash -c "$(curl -fsSL https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/install-stayawake.sh)"
 ```
 
-Uninstall and clean up the launch agent plus StayAwake privacy permission records:
+Uninstall and clean up the launch agent plus any stale StayAwake privacy permission records:
 
 ```bash
 STAYAWAKE_INSTALL_MODE=uninstall /bin/bash -c "$(curl -fsSL https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/install-stayawake.sh)"

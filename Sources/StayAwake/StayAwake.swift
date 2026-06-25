@@ -1,8 +1,6 @@
 import AppKit
 import CryptoKit
 import Darwin
-import ApplicationServices
-import CoreGraphics
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
 private let updateManifestURL = stayAwakeUpdateManifestURL()
@@ -25,33 +23,6 @@ private struct UpdateAsset: Decodable {
     let url: String
     let sha256: String
     let size: Int?
-}
-
-private enum UtilityCommand: String {
-    case checkAccessibility = "--check-accessibility"
-    case checkScreenRecording = "--check-screen-recording"
-    case requestAccessibility = "--request-accessibility"
-    case requestScreenRecording = "--request-screen-recording"
-}
-
-private func handleUtilityCommandIfNeeded() {
-    let arguments = Set(CommandLine.arguments.dropFirst())
-    if arguments.contains(UtilityCommand.checkAccessibility.rawValue) {
-        exit(AXIsProcessTrusted() ? EXIT_SUCCESS : EXIT_FAILURE)
-    }
-    if arguments.contains(UtilityCommand.checkScreenRecording.rawValue) {
-        exit(CGPreflightScreenCaptureAccess() ? EXIT_SUCCESS : EXIT_FAILURE)
-    }
-    if arguments.contains(UtilityCommand.requestAccessibility.rawValue) {
-        let trusted = AXIsProcessTrustedWithOptions([
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ] as CFDictionary)
-        exit(trusted ? EXIT_SUCCESS : EXIT_FAILURE)
-    }
-    if arguments.contains(UtilityCommand.requestScreenRecording.rawValue) {
-        let trusted = CGRequestScreenCaptureAccess()
-        exit(trusted ? EXIT_SUCCESS : EXIT_FAILURE)
-    }
 }
 
 protocol MugButtonDelegate: AnyObject {
@@ -189,7 +160,6 @@ final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
         clearLegacyStatusItemPreferences()
         setupMainMenu()
         setupMenuBarIcon()
-        requestRequiredPermissionsIfNeeded()
         startWatchdog()
         startUpdateChecks()
         cleanupStaleCaffeinate()
@@ -208,34 +178,6 @@ final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
         existing.activate(options: [])
         log("another StayAwake instance is already running pid=\(existing.processIdentifier); exiting pid=\(currentPID)")
         return true
-    }
-
-    private func requestRequiredPermissionsIfNeeded() {
-        let trustedAccessibility = AXIsProcessTrusted()
-        log("accessibility permission check: trusted=\(trustedAccessibility)")
-        if !trustedAccessibility {
-            let promptResult = AXIsProcessTrustedWithOptions([
-                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-            ] as CFDictionary)
-            log("accessibility permission prompt result=\(promptResult)")
-            if !promptResult {
-                showInfo(
-                    """
-                    StayAwake needs Accessibility permission to keep the system awake reliably.
-                    If you do not see the permission prompt, open:
-                    System Settings > Privacy & Security > Accessibility
-                    and enable StayAwake.
-                    """
-                )
-            }
-        }
-
-        let trustedScreenRecording = CGPreflightScreenCaptureAccess()
-        log("screen recording permission check: trusted=\(trustedScreenRecording)")
-        if !trustedScreenRecording {
-            let promptResult = CGRequestScreenCaptureAccess()
-            log("screen recording permission prompt result=\(promptResult)")
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1075,7 +1017,6 @@ private enum StayAwakeApp {
     private static var delegate: AppDelegate?
 
     static func main() {
-        handleUtilityCommandIfNeeded()
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
