@@ -5,7 +5,9 @@ import ServiceManagement
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
 private let launchAgentLabel = "com.elvtech.stayawake"
-private let statusItemAutosaveName: NSStatusItem.AutosaveName = "com.elvtech.stayawake.statusItem"
+private let statusItemAutosaveName: NSStatusItem.AutosaveName = "StayAwakeStatusItem"
+private let statusItemPreferredPositionKey = "NSStatusItem Preferred Position StayAwakeStatusItem"
+private let statusItemDefaultPreferredPosition = 240
 private let updateManifestURL = stayAwakeUpdateManifestURL()
 
 private struct UpdateManifest: Decodable {
@@ -276,6 +278,7 @@ final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
     }
 
     private func setupMenuBarIcon() {
+        seedStatusItemPreferredPositionIfNeeded()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         // Let macOS persist the status item visibility and menu bar position
         // under this app identity. Resetting these preferences on launch can
@@ -299,6 +302,18 @@ final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
             self?.logStatusItemPlacement(reason: "after 5s")
         }
+    }
+
+    private func seedStatusItemPreferredPositionIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: statusItemPreferredPositionKey) == nil else {
+            log("status item preferred position exists; key=\(statusItemPreferredPositionKey) value=\(defaults.integer(forKey: statusItemPreferredPositionKey))")
+            return
+        }
+
+        defaults.set(statusItemDefaultPreferredPosition, forKey: statusItemPreferredPositionKey)
+        defaults.synchronize()
+        log("seeded status item preferred position; key=\(statusItemPreferredPositionKey) value=\(statusItemDefaultPreferredPosition)")
     }
 
     private func configureStatusButton(_ button: NSStatusBarButton) {

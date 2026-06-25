@@ -4,6 +4,7 @@ set -euo pipefail
 APP_BUNDLE_ID="com.elvtech.stayawake"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.elvtech.stayawake.plist"
 CONTROL_CENTER_PREF="$HOME/Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist"
+STATUS_POSITION_KEY="NSStatusItem Preferred Position StayAwakeStatusItem"
 
 section() {
   printf '\n== %s ==\n' "$1"
@@ -35,6 +36,16 @@ check_legacy_launch_agent() {
   fi
 
   printf 'PASS: no legacy StayAwake LaunchAgent found.\n'
+}
+
+check_status_item_position() {
+  section "Status Item Position"
+  if /usr/bin/defaults read com.elvtech.stayawake "$STATUS_POSITION_KEY" >/dev/null 2>&1; then
+    printf 'PASS: %s = %s\n' "$STATUS_POSITION_KEY" "$(/usr/bin/defaults read com.elvtech.stayawake "$STATUS_POSITION_KEY")"
+  else
+    printf 'FAIL: missing persisted StayAwake status item position key: %s\n' "$STATUS_POSITION_KEY"
+    return 1
+  fi
 }
 
 check_control_center_ownership() {
@@ -121,4 +132,5 @@ EOF
 
 check_processes
 check_legacy_launch_agent
+check_status_item_position
 check_control_center_ownership
