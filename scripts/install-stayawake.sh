@@ -245,45 +245,9 @@ run_direct_install() {
   /usr/bin/ditto "$WORK_DIR/StayAwake.app" "$APP_PATH"
   /usr/bin/xattr -cr "$APP_PATH" >/dev/null 2>&1 || true
 
-  mkdir -p "$(dirname "$LAUNCH_AGENT")"
-  cat > "$LAUNCH_AGENT" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.elvtech.stayawake</string>
-  <key>ProgramArguments</key>
-	  <array>
-	    <string>/usr/bin/open</string>
-	    <string>-gj</string>
-	    <string>$APP_PATH</string>
-	  </array>
-	  <key>AssociatedBundleIdentifiers</key>
-	  <array>
-	    <string>com.elvtech.stayawake</string>
-	  </array>
-	  <key>LimitLoadToSessionType</key>
-	  <string>Aqua</string>
-	  <key>RunAtLoad</key>
-	  <true/>
-	  <key>KeepAlive</key>
-	  <false/>
-  <key>ProcessType</key>
-  <string>Interactive</string>
-  <key>StandardOutPath</key>
-  <string>$LOG_DIR/StayAwake.launchd.log</string>
-  <key>StandardErrorPath</key>
-  <string>$LOG_DIR/StayAwake.launchd.err</string>
-</dict>
-</plist>
-PLIST
-
   /bin/launchctl bootout "gui/$(/usr/bin/id -u)" "$LAUNCH_AGENT" >/dev/null 2>&1 || true
-  /bin/launchctl bootstrap "gui/$(/usr/bin/id -u)" "$LAUNCH_AGENT" >/dev/null 2>&1 || true
-  /bin/launchctl enable "gui/$(/usr/bin/id -u)/com.elvtech.stayawake" >/dev/null 2>&1 || true
-  /usr/bin/open "$APP_PATH"
+  /bin/rm -f "$LAUNCH_AGENT"
+  /usr/bin/open -g "$APP_PATH" --args --enable-login-item
 
   echo "StayAwake installed at $APP_PATH"
 }

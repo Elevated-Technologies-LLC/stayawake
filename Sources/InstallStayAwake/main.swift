@@ -322,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try stopOldStayAwake()
             try installApp(from: sourceApp)
             try registerInstalledApp()
-            try writeLaunchAgent()
+            try removeLaunchAgent()
             try? FileManager.default.removeItem(at: temp)
 
             try await setStatus("Opening StayAwake", detail: "StayAwake does not require Screen Recording or Accessibility. Opening the menu bar app now.", progress: 0.84, step: 3)
@@ -459,61 +459,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try run("/usr/bin/osascript", ["-e", osa])
     }
 
-    private func writeLaunchAgent() throws {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let launchAgentDir = home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
-        let logDir = home.appendingPathComponent("Library/Logs", isDirectory: true)
-        try FileManager.default.createDirectory(at: launchAgentDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-
-        let plistPath = launchAgentDir.appendingPathComponent("\(launchAgentLabel).plist")
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>\(launchAgentLabel)</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>/usr/bin/open</string>
-            <string>-gj</string>
-            <string>\(appPath)</string>
-          </array>
-          <key>AssociatedBundleIdentifiers</key>
-          <array>
-            <string>com.elvtech.stayawake</string>
-          </array>
-          <key>LimitLoadToSessionType</key>
-          <string>Aqua</string>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>KeepAlive</key>
-          <false/>
-          <key>ProcessType</key>
-          <string>Interactive</string>
-          <key>StandardOutPath</key>
-          <string>\(logDir.appendingPathComponent("StayAwake.launchd.log").path)</string>
-          <key>StandardErrorPath</key>
-          <string>\(logDir.appendingPathComponent("StayAwake.launchd.err").path)</string>
-        </dict>
-        </plist>
-        """
-        try plist.write(to: plistPath, atomically: true, encoding: .utf8)
-        try run("/usr/bin/plutil", ["-lint", plistPath.path])
-        let domain = "gui/\(getuid())"
-        _ = try? run("/bin/launchctl", ["bootout", domain, plistPath.path])
-    }
-
-    private func startLaunchAgent() throws {
-        let plistPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
-        let domain = "gui/\(getuid())"
-        _ = try? run("/bin/launchctl", ["enable", "\(domain)/\(launchAgentLabel)"])
-        _ = try? run("/bin/launchctl", ["bootstrap", domain, plistPath.path])
-        _ = try? run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(launchAgentLabel)"])
-    }
-
     private func registerInstalledApp() throws {
         let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         if FileManager.default.fileExists(atPath: lsregister) {
@@ -642,12 +587,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openStayAwake() {
         appendLog("Opening StayAwake.")
-        do {
-            try startLaunchAgent()
-        } catch {
-            appendLog("Launch agent start failed: \(error)")
-        }
-        _ = try? run("/usr/bin/open", [appPath])
+        _ = try? run("/usr/bin/open", ["-g", appPath, "--args", "--enable-login-item"])
         progress.doubleValue = 0.94
         markStep(3, state: "done")
         markStep(4, state: "active")

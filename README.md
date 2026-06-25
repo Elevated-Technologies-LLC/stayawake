@@ -10,9 +10,9 @@ Install the latest release:
 /bin/bash -c "$(curl -fsSL https://github.com/Elevated-Technologies-LLC/stayawake/releases/latest/download/install-stayawake.sh)"
 ```
 
-When that command is run in a normal local Terminal session, it launches the graphical `Install StayAwake` app. The installer shows download progress, verifies the GitHub checksum, installs the app, sets up the menu bar launch agent, and opens StayAwake. StayAwake uses macOS `caffeinate` and does not require Screen Recording or Accessibility permission.
+When that command is run in a normal local Terminal session, it launches the graphical `Install StayAwake` app. The installer shows download progress, verifies the GitHub checksum, installs the app, removes the old legacy LaunchAgent if present, and opens StayAwake. StayAwake uses macOS `caffeinate` and registers Launch at Login from inside the app with Apple's `SMAppService` API.
 
-When the same command is run over SSH or in automation, it falls back to the direct non-interactive install flow and places the app in `/Applications/StayAwake.app`, registers a user LaunchAgent, and starts the app.
+When the same command is run over SSH or in automation, it falls back to the direct non-interactive install flow, places the app in `/Applications/StayAwake.app`, removes the old legacy LaunchAgent if present, and starts the app. StayAwake registers Launch at Login from inside the app with Apple's `SMAppService` API so macOS associates the login item with StayAwake itself.
 
 Force the direct automation path:
 
