@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 
 private let appBundleIdentifier = "com.elvtech.stayawake"
+private let statusItemAutosaveName: NSStatusItem.AutosaveName = "com.elvtech.stayawake.statusItem"
 private let updateManifestURL = stayAwakeUpdateManifestURL()
 
 private struct UpdateManifest: Decodable {
@@ -157,7 +158,6 @@ final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
             return
         }
 
-        clearLegacyStatusItemPreferences()
         setupMainMenu()
         setupMenuBarIcon()
         startWatchdog()
@@ -242,29 +242,12 @@ final class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
         quitApp()
     }
 
-    private func clearLegacyStatusItemPreferences() {
-        let defaults = UserDefaults.standard
-        guard let domain = defaults.persistentDomain(forName: appBundleIdentifier) else {
-            return
-        }
-
-        let legacyKeys = domain.keys.filter { $0.hasPrefix("NSStatusItem ") }
-        guard !legacyKeys.isEmpty else {
-            return
-        }
-
-        for key in legacyKeys {
-            defaults.removeObject(forKey: key)
-        }
-
-        defaults.synchronize()
-        log("cleared legacy status item preferences: \(legacyKeys.joined(separator: ", "))")
-    }
-
     private func setupMenuBarIcon() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        // Avoid restoring a stale menu bar slot. Some Macs can keep a bad
-        // saved position that leaves the status item hidden behind system extras.
+        // Let macOS persist the status item visibility and menu bar position
+        // under this app identity. Resetting these preferences on launch can
+        // make Control Center forget that StayAwake is allowed in the menu bar.
+        item.autosaveName = statusItemAutosaveName
         item.isVisible = true
         if let button = item.button {
             configureStatusButton(button)
