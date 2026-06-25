@@ -94,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let screenButton = NSButton(title: "Open Screen Recording", target: nil, action: nil)
     private let accessibilityButton = NSButton(title: "Open Accessibility", target: nil, action: nil)
     private let launchButton = NSButton(title: "Open StayAwake", target: nil, action: nil)
+    private let rollbackButton = NSButton(title: "Rollback Install", target: nil, action: nil)
     private let quitButton = NSButton(title: "Quit", target: nil, action: nil)
     private var stepLabels: [NSTextField] = []
     private var permissionPollTimer: Timer?
@@ -229,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(buttonStack)
 
-        for button in [installButton, screenButton, accessibilityButton, launchButton, quitButton] {
+        for button in [installButton, screenButton, accessibilityButton, launchButton, rollbackButton, quitButton] {
             button.bezelStyle = .rounded
             button.target = self
             buttonStack.addArrangedSubview(button)
@@ -238,13 +239,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screenButton.action = #selector(openScreenRecording)
         accessibilityButton.action = #selector(openAccessibility)
         launchButton.action = #selector(openStayAwake)
+        rollbackButton.action = #selector(rollbackInstall)
         quitButton.action = #selector(quit)
         screenButton.isEnabled = false
         accessibilityButton.isEnabled = false
         launchButton.isEnabled = false
+        rollbackButton.isEnabled = false
         screenButton.isHidden = true
         accessibilityButton.isHidden = true
         launchButton.isHidden = true
+        rollbackButton.isHidden = true
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
@@ -299,6 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screenButton.isHidden = true
         accessibilityButton.isHidden = true
         launchButton.isHidden = true
+        rollbackButton.isHidden = false
+        rollbackButton.isEnabled = true
 
         Task {
             await install()
@@ -343,6 +349,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try await setStatus("StayAwake is installed", detail: "StayAwake is open so macOS can show it in Privacy settings.", progress: 0.82, step: 3)
             await MainActor.run {
                 beginPermissionWorkflow()
+                rollbackButton.isHidden = false
+                rollbackButton.isEnabled = true
             }
             appendLog("Installed \(appPath).")
             appendLog("Next: the installer will guide each required Privacy permission one at a time.")
@@ -352,6 +360,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 detailLabel.stringValue = "\(error)"
                 progress.doubleValue = 0
                 installButton.isEnabled = true
+                rollbackButton.isHidden = false
+                rollbackButton.isEnabled = true
             }
             appendLog("ERROR: \(error)")
         }
@@ -520,13 +530,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openScreenRecording() {
-        _ = try? run("/usr/bin/open", ["-gj", appPath])
-        startPermissionWait(.screenRecording)
+        handlePermissionButton(.screenRecording)
     }
 
     @objc private func openAccessibility() {
+        handlePermissionButton(.accessibility)
+    }
+
+    private func handlePermissionButton(_ kind: PermissionKind) {
+        let screenGranted = permissionIsGranted(.screenRecording)
+        let accessibilityGranted = permissionIsGranted(.accessibility)
+        let requestedGranted = kind == .screenRecording ? screenGranted : accessibilityGranted
+        if requestedGranted {
+            appendLog("\(kind.displayName) is already granted; continuing.")
+            continuePermissionWorkflow(screenGranted: screenGranted, accessibilityGranted: accessibilityGranted)
+            return
+        }
+
         _ = try? run("/usr/bin/open", ["-gj", appPath])
-        startPermissionWait(.accessibility)
+        startPermissionWait(kind)
     }
 
     private func beginPermissionWorkflow() {
@@ -557,9 +579,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launchButton.isHidden = true
         screenButton.isEnabled = kind == .screenRecording
         accessibilityButton.isEnabled = kind == .accessibility
+        if kind == .screenRecording {
+            screenButton.title = "Open Screen Recording"
+        } else {
+            accessibilityButton.title = "Open Accessibility"
+        }
         launchButton.isEnabled = false
         statusLabel.stringValue = "Grant \(kind.displayName)"
-        detailLabel.stringValue = "Click the \(kind.displayName) button, turn StayAwake on in System Settings, and the installer will continue automatically."
+        detailLabel.stringValue = "Click the \(kind.displayName) button, turn StayAwake on in System Settings, and the installer will continue automatically. If it does not move, click the button again to recheck."
         markStep(3, state: "active")
         schedulePermissionPolling(kind)
     }
@@ -568,7 +595,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionPollTimer?.invalidate()
         activePermissionWait = kind
         statusLabel.stringValue = "Waiting for \(kind.displayName)"
-        detailLabel.stringValue = "Toggle StayAwake on in System Settings. This installer is paused and will not trigger repeated Apple permission prompts."
+        detailLabel.stringValue = "Toggle StayAwake on in System Settings. This installer is paused and will not trigger repeated Apple permission prompts. Click Continue after allowing if it does not move."
+        switch kind {
+        case .screenRecording:
+            screenButton.title = "Continue"
+        case .accessibility:
+            accessibilityButton.title = "Continue"
+        }
         appendLog("Opening \(kind.displayName) settings. Toggle StayAwake on; installer is waiting quietly.")
         openSettingsPane(kind.settingsURL)
         progress.doubleValue = max(progress.doubleValue, 0.90)
@@ -578,11 +611,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func schedulePermissionPolling(_ kind: PermissionKind) {
         permissionPollTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.pollPermission(kind)
         }
         timer.tolerance = 1
         permissionPollTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
         pollPermission(kind)
     }
 
@@ -608,22 +642,171 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func permissionIsGranted(_ kind: PermissionKind) -> Bool {
         let executable = appURL.appendingPathComponent("Contents/MacOS/StayAwake").path
-        guard FileManager.default.fileExists(atPath: executable) else {
+        if FileManager.default.fileExists(atPath: executable) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = [kind.checkArgument]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 {
+                    return true
+                }
+            } catch {
+                appendLog("\(kind.displayName) command check failed: \(error.localizedDescription)")
+            }
+        }
+        return permissionIsGrantedInTCCDatabase(kind)
+    }
+
+    private func permissionIsGrantedInTCCDatabase(_ kind: PermissionKind) -> Bool {
+        let database = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db")
+        guard FileManager.default.fileExists(atPath: database.path) else {
             return false
         }
+        let service: String
+        switch kind {
+        case .screenRecording:
+            service = "kTCCServiceScreenCapture"
+        case .accessibility:
+            service = "kTCCServiceAccessibility"
+        }
+        let candidates = [
+            "com.elvtech.stayawake",
+            "/Applications/StayAwake.app/Contents/MacOS/StayAwake",
+            appURL.appendingPathComponent("Contents/MacOS/StayAwake").path,
+            "StayAwake"
+        ]
+        let quotedCandidates = candidates.map { "'\($0.replacingOccurrences(of: "'", with: "''"))'" }.joined(separator: ",")
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = [kind.checkArgument]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [
+            database.path,
+            "SELECT auth_value FROM access WHERE service='\(service)' AND client IN (\(quotedCandidates)) ORDER BY last_modified DESC LIMIT 1;"
+        ]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
         do {
             try process.run()
             process.waitUntilExit()
-            return process.terminationStatus == 0
+            guard process.terminationStatus == 0 else {
+                return false
+            }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text == "2"
         } catch {
             return false
         }
+    }
+
+    @objc private func rollbackInstall() {
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
+        activePermissionWait = nil
+        rollbackButton.isEnabled = false
+        Task {
+            await rollbackInstalledApp()
+        }
+    }
+
+    private func rollbackInstalledApp() async {
+        await MainActor.run {
+            statusLabel.stringValue = "Rolling back StayAwake"
+            detailLabel.stringValue = "Stopping the menu item and restoring the previous app if a backup exists."
+            progress.doubleValue = 0.20
+            appendLog("Rollback started.")
+        }
+
+        do {
+            try stopOldStayAwake()
+            try removeLaunchAgent()
+            let result = try rollbackAppBundle()
+            await MainActor.run {
+                screenButton.isHidden = true
+                accessibilityButton.isHidden = true
+                launchButton.isHidden = true
+                installButton.isEnabled = true
+                rollbackButton.isEnabled = true
+                statusLabel.stringValue = "Rollback finished"
+                detailLabel.stringValue = result
+                progress.doubleValue = 0
+                appendLog(result)
+            }
+        } catch {
+            await MainActor.run {
+                rollbackButton.isEnabled = true
+                statusLabel.stringValue = "Rollback failed"
+                detailLabel.stringValue = "\(error)"
+                appendLog("Rollback failed: \(error)")
+            }
+        }
+    }
+
+    private func removeLaunchAgent() throws {
+        let launchAgentPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
+        if FileManager.default.fileExists(atPath: launchAgentPath.path) {
+            try FileManager.default.removeItem(at: launchAgentPath)
+        }
+    }
+
+    private func latestBackupURL() -> URL? {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: installDirectoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
+            return nil
+        }
+        let backups = contents.filter { $0.lastPathComponent.hasPrefix("\(appName).app.before-") }
+        return backups.sorted { lhs, rhs in
+            let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return leftDate > rightDate
+        }.first
+    }
+
+    private func rollbackAppBundle() throws -> String {
+        let backup = latestBackupURL()
+        do {
+            if FileManager.default.fileExists(atPath: appURL.path) {
+                try FileManager.default.removeItem(at: appURL)
+            }
+            if let backup {
+                try FileManager.default.moveItem(at: backup, to: appURL)
+                _ = try? run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", appURL.path])
+                return "Restored previous StayAwake from \(backup.lastPathComponent)."
+            }
+            return "Removed the installed StayAwake app. No previous backup was found."
+        } catch {
+            try rollbackAppBundleWithPrivileges(backup: backup)
+            if let backup {
+                return "Restored previous StayAwake from \(backup.lastPathComponent)."
+            }
+            return "Removed the installed StayAwake app. No previous backup was found."
+        }
+    }
+
+    private func rollbackAppBundleWithPrivileges(backup: URL?) throws {
+        var command = """
+        set -e
+        app=\(shellQuote(appPath))
+        rm -rf "$app"
+        """
+        if let backup {
+            command += """
+            mv \(shellQuote(backup.path)) "$app"
+            /usr/bin/xattr -dr com.apple.quarantine "$app" >/dev/null 2>&1 || true
+            """
+        }
+        let osa = "do shell script \(appleScriptString(command)) with administrator privileges"
+        try run("/usr/bin/osascript", ["-e", osa])
     }
 
     @objc private func openStayAwake() {
